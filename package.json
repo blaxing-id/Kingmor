@@ -1,0 +1,19 @@
+{
+  "name": "kingmor",
+  "version": "1.0.0",
+  "description": "Kingmor Protection System",
+  "main": "server.js",
+  "scripts": {
+    "start": "concurrently \"node server.js\" \"node bot.js\""
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "express-session": "^1.17.3",
+    "axios": "^1.6.2",
+    "discord.js": "^14.14.1",
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
