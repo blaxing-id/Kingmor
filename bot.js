@@ -57,7 +57,10 @@ function readBlacklist() { try { return JSON.parse(fs.readFileSync(BLACKLIST_FIL
 function writeBlacklist(data) { fs.writeFileSync(BLACKLIST_FILE, JSON.stringify(data, null, 2)); }
 
 function isBlacklisted(userId) {
-  return readBlacklist().some(b => String(b.userId) === String(userId));
+  return readBlacklist().some(b => b.type !== "role" && String(b.userId) === String(userId));
+}
+function isRoleBlacklisted(roleId) {
+  return readBlacklist().some(b => b.type === "role" && String(b.roleId) === String(roleId));
 }
 
 function generateKey() {
@@ -73,9 +76,6 @@ function hasPermission(member, guildId) {
   return member.roles.cache.has(roleId);
 }
 
-// ==================== GUILD SCRIPT HELPER ====================
-// Ambil script yang terdaftar di guild ini melalui panel
-// Mengembalikan { scriptId, ownerId } atau null jika tidak ada panel
 function getGuildPanelScript(guildId) {
   const cfg = readConfig()[guildId] || {};
   const scriptId = cfg.panelScriptId;
@@ -84,7 +84,6 @@ function getGuildPanelScript(guildId) {
   return { scriptId, ownerId: ownerId || null };
 }
 
-// Fetch info script dari server berdasarkan scriptId
 async function fetchScriptById(scriptId) {
   try {
     const res = await axios.get(`${CONFIG.apiBase}/api/scripts/internal/${scriptId}`, {
@@ -106,6 +105,7 @@ const panelTempData = new Map();
 const buyerRoleTempData = new Map();
 const freeModeTempData = new Map();
 const webhookTempData = new Map();
+const blacklistRoleTempData = new Map();
 
 function describeAxiosError(err) {
   if (err.response) return `HTTP ${err.response.status} — ${JSON.stringify(err.response.data)}`;
@@ -194,9 +194,16 @@ const commands = [
     .addStringOption(o => o.setName("reason").setDescription("Reason").setRequired(false)),
 
   new SlashCommandBuilder()
+    .setName("blacklistrole")
+    .setDescription("Blacklist a role from using scripts")
+    .addRoleOption(o => o.setName("role").setDescription("Role to blacklist").setRequired(true))
+    .addStringOption(o => o.setName("reason").setDescription("Reason").setRequired(false)),
+
+  new SlashCommandBuilder()
     .setName("unblacklist")
-    .setDescription("Unblacklist user")
-    .addUserOption(o => o.setName("user").setDescription("User").setRequired(true)),
+    .setDescription("Unblacklist user or role")
+    .addUserOption(o => o.setName("user").setDescription("User").setRequired(false))
+    .addRoleOption(o => o.setName("role").setDescription("Role to unblacklist").setRequired(false)),
 
   new SlashCommandBuilder()
     .setName("revoke")
@@ -291,19 +298,36 @@ async function sendPanelEmbed(channel, title, description, scriptId, scriptName,
 
   await channel.send({ embeds: [embed], components: [row1, row2, row3] });
 
-  // Simpan scriptId, channelId, dan ownerId ke config guild
   const cfg = readConfig();
   if (!cfg[guildId]) cfg[guildId] = {};
   cfg[guildId].panelChannelId = channel.id;
   cfg[guildId].panelScriptId = scriptId;
-  cfg[guildId].panelOwnerId = ownerId; // ← penting untuk whitelist guild-based
+  cfg[guildId].panelOwnerId = ownerId;
   writeConfig(cfg);
+}
+
+// Helper: cek apakah user blacklisted (user-level atau role-level)
+async function checkUserBlacklisted(interaction) {
+  if (isBlacklisted(interaction.user.id)) return "user";
+  try {
+    const member = await interaction.guild.members.fetch(interaction.user.id);
+    for (const roleId of member.roles.cache.keys()) {
+      if (isRoleBlacklisted(roleId)) return roleId;
+    }
+  } catch {}
+  return null;
 }
 
 client.on("interactionCreate", async interaction => {
   try {
-    if (interaction.isButton() && isBlacklisted(interaction.user.id)) {
-      return interaction.reply({ content: "❌ You have been blacklisted by the owner.", ephemeral: true }).catch(() => {});
+    if ((interaction.isButton() || interaction.isModalSubmit() || interaction.isStringSelectMenu()) && interaction.guild) {
+      const blCheck = await checkUserBlacklisted(interaction);
+      if (blCheck) {
+        const msg = blCheck === "user"
+          ? "❌ You have been blacklisted by the owner."
+          : `❌ Your role <@&${blCheck}> has been blacklisted from using scripts.`;
+        return interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
+      }
     }
 
     // ==================== BUTTONS ====================
@@ -459,7 +483,6 @@ client.on("interactionCreate", async interaction => {
 
         if (!keyData) return interaction.editReply({ content: "❌ Invalid key." }).catch(() => {});
 
-        // Block redeem if user already has a valid (non-expired) key for the same script
         const existingKey = keys.find(k =>
           k.key !== keyInput &&
           String(k.userId) === String(interaction.user.id) &&
@@ -579,6 +602,45 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
+      // ==================== BLACKLISTROLE SELECT ====================
+      if (interaction.customId.startsWith("blacklistrole_select:")) {
+        await interaction.deferReply({ ephemeral: false }).catch(() => {});
+        try {
+          const parts = interaction.customId.split(":");
+          const roleId = parts[1];
+          const reason = parts.slice(2).join(":") || "No reason provided";
+
+          const scriptId = interaction.values[0];
+          const scriptInfo = await fetchScriptById(scriptId);
+
+          if (!scriptInfo) {
+            return interaction.editReply({ content: "❌ Script not found." }).catch(() => {});
+          }
+
+          const bl = readBlacklist();
+          if (bl.some(b => b.type === "role" && String(b.roleId) === String(roleId))) {
+            return interaction.editReply({ content: "❌ This role is already blacklisted!" }).catch(() => {});
+          }
+
+          bl.push({
+            type: "role",
+            roleId: String(roleId),
+            scriptId: String(scriptId),
+            reason,
+            blacklistedBy: interaction.user.id,
+            blacklistedAt: new Date().toISOString()
+          });
+          writeBlacklist(bl);
+
+          return interaction.editReply({
+            content: `🚫 **<@&${roleId}> has been blacklisted from script **${scriptInfo.name}**!**\nAll members with this role have been revoked from the script.`
+          }).catch(() => {});
+        } catch (err) {
+          console.error("blacklistrole_select error:", err);
+          return interaction.editReply({ content: "❌ Failed to blacklist role." }).catch(() => {});
+        }
+      }
+
       if (interaction.customId === "setuppanel_select") {
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
         try {
@@ -646,7 +708,6 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
-      // ==================== WHITELIST SELECT (guild-based) ====================
       if (interaction.customId.startsWith("whitelist_select:")) {
         await interaction.deferReply({ ephemeral: false }).catch(() => {});
         try {
@@ -655,12 +716,9 @@ client.on("interactionCreate", async interaction => {
           const targetId = parts[2];
           const days = parseInt(parts[3]);
           const adminId = parts[4];
-
-          // Script sudah diambil dari guild panel sebelumnya, ambil dari param
           const scriptId = parts[5];
           const scriptOwnerId = parts[6];
 
-          // Verifikasi script masih ada
           const scriptInfo = await fetchScriptById(scriptId);
           if (!scriptInfo) {
             return interaction.editReply({
@@ -668,7 +726,6 @@ client.on("interactionCreate", async interaction => {
             }).catch(() => {});
           }
 
-          // Verifikasi user yang whitelist punya permission
           if (!hasPermission(interaction.member, interaction.guildId)) {
             return interaction.editReply({ content: "❌ No permission." }).catch(() => {});
           }
@@ -679,7 +736,6 @@ client.on("interactionCreate", async interaction => {
           const buyerRoleId = cfg.buyerRoles?.[scriptId] || cfg.buyerRole || null;
 
           if (targetType === "user") {
-            // Cek sudah punya key aktif
             const existingKey = keys.find(k =>
               String(k.userId) === String(targetId) &&
               k.scriptId === scriptId &&
@@ -1027,7 +1083,6 @@ client.on("interactionCreate", async interaction => {
             return interaction.editReply({ content: "❌ Select a user or role!" }).catch(() => {});
           }
 
-          // Ambil script yang terdaftar di guild ini via panel
           const guildData = getGuildPanelScript(interaction.guildId);
           if (!guildData || !guildData.scriptId) {
             return interaction.editReply({
@@ -1037,7 +1092,6 @@ client.on("interactionCreate", async interaction => {
 
           const { scriptId, ownerId: scriptOwnerId } = guildData;
 
-          // Fallback: jika panelOwnerId belum tersimpan (panel lama), fetch dari API
           let resolvedOwnerId = scriptOwnerId;
           if (!resolvedOwnerId) {
             const scriptInfo = await fetchScriptById(scriptId);
@@ -1047,7 +1101,6 @@ client.on("interactionCreate", async interaction => {
               }).catch(() => {});
             }
             resolvedOwnerId = scriptInfo.ownerId;
-            // Update config supaya ke depannya tidak perlu fetch lagi
             const cfg = readConfig();
             if (cfg[interaction.guildId]) {
               cfg[interaction.guildId].panelOwnerId = resolvedOwnerId;
@@ -1055,7 +1108,6 @@ client.on("interactionCreate", async interaction => {
             }
           }
 
-          // Verifikasi script masih ada
           const allScripts = await getScriptsByOwner(resolvedOwnerId);
           const script = allScripts.find(s => s.id === scriptId);
           if (!script) {
@@ -1069,7 +1121,6 @@ client.on("interactionCreate", async interaction => {
           const cfg = readConfig()[interaction.guildId] || {};
           const buyerRoleId = cfg.buyerRoles?.[scriptId] || cfg.buyerRole || null;
 
-          // ── Target: single user ──
           if (targetUser) {
             const existingKey = keys.find(k =>
               String(k.userId) === String(targetUser.id) &&
@@ -1103,7 +1154,6 @@ client.on("interactionCreate", async interaction => {
             }).catch(() => {});
           }
 
-          // ── Target: role (whitelist semua member role) ──
           if (targetRole) {
             const role = await interaction.guild.roles.fetch(targetRole.id);
             await interaction.guild.members.fetch();
@@ -1155,10 +1205,11 @@ client.on("interactionCreate", async interaction => {
           const targetUser = interaction.options.getUser("user");
           const reason = interaction.options.getString("reason") || "No reason provided";
           const bl = readBlacklist();
-          if (bl.some(b => String(b.userId) === String(targetUser.id))) {
+          if (bl.some(b => b.type !== "role" && String(b.userId) === String(targetUser.id))) {
             return interaction.editReply({ content: "❌ This user is already blacklisted!" }).catch(() => {});
           }
           bl.push({
+            type: "user",
             userId: String(targetUser.id), username: targetUser.username, reason,
             blacklistedBy: interaction.user.id, blacklistedAt: new Date().toISOString()
           });
@@ -1172,6 +1223,64 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
+      // ==================== BLACKLISTROLE ====================
+      if (commandName === "blacklistrole") {
+        if (!hasPermission(interaction.member, interaction.guildId)) {
+          return interaction.reply({ content: "❌ No permission.", ephemeral: true }).catch(() => {});
+        }
+        await interaction.deferReply({ ephemeral: true }).catch(() => {});
+        try {
+          const role = interaction.options.getRole("role");
+          const reason = interaction.options.getString("reason") || "No reason provided";
+
+          const myScripts = await getScriptsByOwner(interaction.user.id);
+          if (myScripts.length === 0) {
+            return interaction.editReply({ content: "❌ You don't have any scripts yet." }).catch(() => {});
+          }
+
+          // Jika hanya 1 script → langsung blacklist role untuk script itu
+          if (myScripts.length === 1) {
+            const scriptId = myScripts[0].id;
+            const bl = readBlacklist();
+            if (bl.some(b => b.type === "role" && String(b.roleId) === String(role.id))) {
+              return interaction.editReply({ content: "❌ This role is already blacklisted!" }).catch(() => {});
+            }
+            bl.push({
+              type: "role",
+              roleId: String(role.id),
+              scriptId: String(scriptId),
+              reason,
+              blacklistedBy: interaction.user.id,
+              blacklistedAt: new Date().toISOString()
+            });
+            writeBlacklist(bl);
+            return interaction.editReply({
+              content: `🚫 **<@&${role.id}> has been blacklisted from script **${myScripts[0].name}**!**\nAll members with this role have been revoked from the script.`
+            }).catch(() => {});
+          }
+
+          // Jika lebih dari 1 script → tampilkan dropdown
+          const options = myScripts.sort((a, b) => a.name.localeCompare(b.name)).slice(0, 25).map(s =>
+            new StringSelectMenuOptionBuilder()
+              .setLabel(s.name.length > 50 ? s.name.slice(0, 47) + "..." : s.name)
+              .setValue(s.id)
+          );
+          const select = new StringSelectMenuBuilder()
+            .setCustomId(`blacklistrole_select:${role.id}:${reason}`)
+            .setPlaceholder("Select a script...")
+            .addOptions(options);
+
+          return interaction.editReply({
+            content: `Select a script to blacklist role <@&${role.id}> from:`,
+            components: [new ActionRowBuilder().addComponents(select)]
+          }).catch(() => {});
+        } catch (err) {
+          console.error("blacklistrole error:", err);
+          return interaction.editReply({ content: "❌ Failed to blacklist role." }).catch(() => {});
+        }
+      }
+
+      // ==================== UNBLACKLIST (user + role) ====================
       if (commandName === "unblacklist") {
         if (!hasPermission(interaction.member, interaction.guildId)) {
           return interaction.reply({ content: "❌ No permission.", ephemeral: true }).catch(() => {});
@@ -1179,14 +1288,45 @@ client.on("interactionCreate", async interaction => {
         await interaction.deferReply({ ephemeral: false }).catch(() => {});
         try {
           const targetUser = interaction.options.getUser("user");
+          const targetRole = interaction.options.getRole("role");
+
+          if (!targetUser && !targetRole) {
+            return interaction.editReply({ content: "❌ Select a user or role to unblacklist!" }).catch(() => {});
+          }
+
           const bl = readBlacklist();
-          const index = bl.findIndex(b => String(b.userId) === String(targetUser.id));
-          if (index === -1) return interaction.editReply({ content: "❌ User is not blacklisted." }).catch(() => {});
-          bl.splice(index, 1);
+          let removed = 0;
+
+          if (targetUser) {
+            const index = bl.findIndex(b => b.type !== "role" && String(b.userId) === String(targetUser.id));
+            if (index !== -1) { bl.splice(index, 1); removed++; }
+          }
+
+          if (targetRole) {
+            const before = bl.length;
+            for (let i = bl.length - 1; i >= 0; i--) {
+              if (bl[i].type === "role" && String(bl[i].roleId) === String(targetRole.id)) {
+                bl.splice(i, 1);
+                removed++;
+              }
+            }
+          }
+
+          if (removed === 0) {
+            return interaction.editReply({ content: "❌ Nothing to unblacklist (user/role not found)." }).catch(() => {});
+          }
+
           writeBlacklist(bl);
-          return interaction.editReply({ content: `✅ **<@${targetUser.id}> has been unblacklisted!**` }).catch(() => {});
+
+          const parts = [];
+          if (targetUser) parts.push(`<@${targetUser.id}>`);
+          if (targetRole) parts.push(`<@&${targetRole.id}>`);
+
+          return interaction.editReply({
+            content: `✅ ${parts.join(" & ")} has been unblacklisted!`
+          }).catch(() => {});
         } catch {
-          return interaction.editReply({ content: "❌ Failed to unblacklist user." }).catch(() => {});
+          return interaction.editReply({ content: "❌ Failed to unblacklist." }).catch(() => {});
         }
       }
 
