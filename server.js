@@ -271,6 +271,22 @@ app.get("/api/scripts/internal/:id", requireInternalSecret, (req, res) => {
   });
 });
 
+// Endpoint baru: ambil source script (untuk edit di dashboard)
+app.get("/api/scripts/:id/source", requireAuth, (req, res) => {
+  const db = readDB();
+  const script = db.find((s) => s.id === req.params.id);
+  if (!script) return res.status(404).json({ error: "Script not found" });
+  if (script.ownerId !== req.session.user.id) return res.status(403).json({ error: "Forbidden" });
+  const filepath = path.join(SCRIPTS_DIR, script.filename);
+  if (!fs.existsSync(filepath)) return res.status(404).json({ error: "Source file missing" });
+  res.json({
+    id: script.id,
+    name: script.name,
+    enabled: script.enabled,
+    source: fs.readFileSync(filepath, "utf8"),
+  });
+});
+
 app.post("/api/scripts", requireAuth, (req, res) => {
   const { name, source, guildId } = req.body;
   if (!name || typeof name !== "string") return res.status(400).json({ error: "Script name is required" });
@@ -285,6 +301,7 @@ app.post("/api/scripts", requireAuth, (req, res) => {
     id, name: name.trim().slice(0, 100), filename, enabled: true,
     ownerId: String(req.session.user.id), ownerUsername: req.session.user.username,
     guildId: guildId || null, createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   };
 
   const db = readDB();
@@ -298,6 +315,48 @@ app.post("/api/scripts", requireAuth, (req, res) => {
     success: true,
     script: { id: script.id, name: script.name, enabled: script.enabled, createdAt: script.createdAt },
     loader: `${base}/api/loader/${id}.lua`,
+  });
+});
+
+// ==================== EDIT / UPDATE SCRIPT ====================
+app.put("/api/scripts/:id", requireAuth, (req, res) => {
+  const { name, source } = req.body;
+  const db = readDB();
+  const script = db.find((x) => x.id === req.params.id);
+  if (!script) return res.status(404).json({ error: "Script not found" });
+  if (script.ownerId !== req.session.user.id) return res.status(403).json({ error: "Forbidden" });
+
+  if (name !== undefined) {
+    if (typeof name !== "string" || !name.trim()) {
+      return res.status(400).json({ error: "Script name cannot be empty" });
+    }
+    script.name = name.trim().slice(0, 100);
+  }
+
+  if (source !== undefined) {
+    if (typeof source !== "string" || !source.trim()) {
+      return res.status(400).json({ error: "Lua source cannot be empty" });
+    }
+    if (source.length > 10 * 1024 * 1024) {
+      return res.status(413).json({ error: "File too large. Maximum 10MB." });
+    }
+    const filepath = path.join(SCRIPTS_DIR, script.filename);
+    fs.writeFileSync(filepath, source, "utf8");
+  }
+
+  script.updatedAt = new Date().toISOString();
+  writeDB(db);
+
+  console.log(`✏️  Script updated: "${script.name}" (${script.id}) by ${script.ownerId}`);
+
+  res.json({
+    success: true,
+    script: {
+      id: script.id,
+      name: script.name,
+      enabled: script.enabled,
+      updatedAt: script.updatedAt,
+    },
   });
 });
 
@@ -813,29 +872,32 @@ app.get("/", requireAuth, (req, res) => {
     const base = getBaseUrl(req);
     const loaderPage = `${base}/api/loader/${script.id}.lua`;
     const loaderCodeDisplay = `loadstring(game:HttpGet("${base}/api/loader/${script.id}.lua"))()`;
+    const updatedAt = script.updatedAt ? new Date(script.updatedAt).toLocaleString() : "-";
     return `
 <div class="script-card">
-<div class="script-info">
+  <div class="script-info">
     <div class="script-icon">👑</div>
     <div>
-        <div class="script-name">${escapeHtml(script.name)}</div>
-        <div class="script-status ${script.enabled ? "on" : "off"}">
-            ${script.enabled ? "● Enabled" : "● Disabled"}
-        </div>
+      <div class="script-name">${escapeHtml(script.name)}</div>
+      <div class="script-status ${script.enabled ? "on" : "off"}">
+        ${script.enabled ? "● Enabled" : "● Disabled"}
+      </div>
+      <div class="script-updated">Updated: ${escapeHtml(updatedAt)}</div>
     </div>
-</div>
-<div class="script-menu">
+  </div>
+  <div class="script-menu">
     <button class="dots" onclick="toggleMenu('${script.id}')">⋮</button>
     <div class="menu" id="menu-${script.id}">
-        <button onclick="openStats()">📊 Dashboard</button>
-        <button onclick='openLoader(${JSON.stringify(loaderPage)})'>👑 Open Loader</button>
-        <button onclick='copyLoaderCode(${JSON.stringify(loaderCodeDisplay)})'>📋 Copy Loader</button>
-        <button onclick="toggleScript('${script.id}')">
-            ${script.enabled ? "⏸ Disable" : "▶ Enable"}
-        </button>
-        <button class="delete" onclick="deleteScript('${script.id}')">🗑 Delete</button>
+      <button onclick="openEdit('${script.id}')">✏️ Edit Source</button>
+      <button onclick="openStats()">📊 Dashboard</button>
+      <button onclick='openLoader(${JSON.stringify(loaderPage)})'>👑 Open Loader</button>
+      <button onclick='copyLoaderCode(${JSON.stringify(loaderCodeDisplay)})'>📋 Copy Loader</button>
+      <button onclick="toggleScript('${script.id}')">
+        ${script.enabled ? "⏸ Disable" : "▶ Enable"}
+      </button>
+      <button class="delete" onclick="deleteScript('${script.id}')">🗑 Delete</button>
     </div>
-</div>
+  </div>
 </div>`;
   }).join("");
 
@@ -882,20 +944,24 @@ body { min-height: 100vh; font-family: Arial, Helvetica, sans-serif; color: whit
 .form-grid { margin-top: 22px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 input, textarea { width: 100%; outline: none; border: 1px solid rgba(255,200,0,.2);
   border-radius: 11px; background: #1a1a1a; color: white; padding: 13px; font-family: inherit; }
-textarea { grid-column: 1 / -1; min-height: 180px; resize: vertical; }
+input:focus, textarea:focus { border-color: #ffd700; box-shadow: 0 0 0 3px rgba(255,200,0,.1); }
+textarea { grid-column: 1 / -1; min-height: 180px; resize: vertical; font-family: 'Courier New', monospace; font-size: 13px; }
 .file-row { display: flex; align-items: center; gap: 10px; grid-column: 1 / -1; }
 .file-label { display: inline-flex; align-items: center; justify-content: center;
   padding: 12px 18px; border-radius: 11px; background: #ffd700; color: #0a0a0a;
-  font-size: 13px; font-weight: 800; cursor: pointer; }
+  font-size: 13px; font-weight: 800; cursor: pointer; transition: transform .2s, filter .2s; }
+.file-label:hover { transform: translateY(-2px); filter: brightness(1.05); }
 .file-name { color: #888; font-size: 12px; }
 #fileInput { display: none; }
 .upload-button { grid-column: 1 / -1; width: 100%; padding: 14px; border: none; border-radius: 11px;
-  background: linear-gradient(90deg, #ffd700, #ffed4a); color: #0a0a0a; font-weight: 800; cursor: pointer; }
+  background: linear-gradient(90deg, #ffd700, #ffed4a); color: #0a0a0a; font-weight: 800; cursor: pointer; transition: transform .2s, filter .2s; }
+.upload-button:hover { transform: translateY(-2px); filter: brightness(1.05); }
 .section-title { margin: 25px 0 12px; color: #aaa; font-size: 15px; }
 .scripts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px,1fr)); gap: 15px; }
 .script-card { position: relative; display: flex; align-items: center; justify-content: space-between;
   padding: 18px; border-radius: 17px; background: linear-gradient(145deg, #1a1a1a, #0d0d0d);
-  border: 1px solid rgba(255,200,0,.15); }
+  border: 1px solid rgba(255,200,0,.15); transition: border-color .2s; }
+.script-card:hover { border-color: rgba(255,200,0,.4); }
 .script-info { display: flex; align-items: center; gap: 13px; }
 .script-icon { width: 45px; height: 45px; display: flex; align-items: center; justify-content: center;
   border-radius: 12px; background: linear-gradient(135deg, #ffd700, #ffed4a); font-size: 22px; }
@@ -904,25 +970,65 @@ textarea { grid-column: 1 / -1; min-height: 180px; resize: vertical; }
 .script-status { margin-top: 4px; font-size: 11px; }
 .script-status.on { color: #54ff88; }
 .script-status.off { color: #ff4d4d; }
+.script-updated { margin-top: 2px; font-size: 10px; color: rgba(255,255,255,.35); }
 .script-menu { position: relative; }
 .dots { width: 38px; height: 38px; border: none; border-radius: 10px; background: #1c1c1c;
-  color: #ffd700; font-size: 23px; cursor: pointer; }
-.menu { display: none; position: absolute; z-index: 100; right: 0; top: 45px; width: 180px;
+  color: #ffd700; font-size: 23px; cursor: pointer; transition: background .2s; }
+.dots:hover { background: #2a2a2a; }
+.menu { display: none; position: absolute; z-index: 100; right: 0; top: 45px; width: 190px;
   padding: 6px; border-radius: 12px; background: #1a1a1a;
   border: 1px solid rgba(255,200,0,.2); box-shadow: 0 15px 40px rgba(0,0,0,.6); }
 .menu.show { display: block; }
 .menu button { width: 100%; padding: 10px; border: none; border-radius: 8px;
-  background: transparent; color: #eee; text-align: left; cursor: pointer; }
+  background: transparent; color: #eee; text-align: left; cursor: pointer; transition: background .15s, color .15s; }
 .menu button:hover { background: #2a2a2a; color: #ffd700; }
 .menu .delete { color: #ff4d4d; }
 .empty { padding: 50px; text-align: center; color: #666;
   border: 1px dashed rgba(255,200,0,.2); border-radius: 18px; }
+
+/* ── Edit Modal ── */
+.modal-overlay {
+  display: none; position: fixed; inset: 0; z-index: 999;
+  background: rgba(0,0,0,.75); backdrop-filter: blur(6px);
+  align-items: center; justify-content: center; padding: 20px;
+}
+.modal-overlay.show { display: flex; }
+.modal {
+  width: 100%; max-width: 760px; max-height: 90vh; overflow-y: auto;
+  padding: 28px; border-radius: 20px;
+  border: 1px solid rgba(255,200,0,.3);
+  background: linear-gradient(145deg, #1a1a1a, #0d0d0d);
+  box-shadow: 0 25px 80px rgba(0,0,0,.7);
+}
+.modal h3 { color: #ffd700; font-size: 20px; margin-bottom: 18px; display: flex; align-items: center; gap: 8px; }
+.modal label { display: block; font-size: 11px; font-weight: 800; letter-spacing: 1px;
+  color: rgba(255,255,255,.45); margin-bottom: 6px; text-transform: uppercase; }
+.modal input, .modal textarea { width: 100%; }
+.modal textarea { min-height: 340px; }
+.modal-actions { display: flex; gap: 10px; margin-top: 16px; }
+.btn-cancel { flex: 1; padding: 13px; border: 1px solid rgba(255,255,255,.15); border-radius: 11px;
+  background: transparent; color: #ccc; font-weight: 700; cursor: pointer; transition: background .2s; }
+.btn-cancel:hover { background: rgba(255,255,255,.05); }
+.btn-save { flex: 2; padding: 13px; border: none; border-radius: 11px;
+  background: linear-gradient(90deg, #ffd700, #ffed4a); color: #0a0a0a;
+  font-weight: 800; cursor: pointer; transition: transform .2s, filter .2s; }
+.btn-save:hover { transform: translateY(-2px); filter: brightness(1.05); }
+.btn-save:disabled { opacity: .5; cursor: wait; transform: none; }
+.modal-file-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.modal-file-label { display: inline-flex; align-items: center; gap: 6px;
+  padding: 9px 14px; border-radius: 9px; background: #ffd700; color: #0a0a0a;
+  font-size: 12px; font-weight: 800; cursor: pointer; }
+.modal-file-label:hover { filter: brightness(1.05); }
+#editFileInput { display: none; }
+#editFileName { color: #888; font-size: 11px; }
+
 @media(max-width:700px) {
   .header { padding: 18px; }
   .user-name { display: none; }
   .container { width: calc(100% - 20px); margin-top: 20px; }
   .form-grid { grid-template-columns: 1fr; }
   textarea, .upload-button { grid-column: auto; }
+  .modal { padding: 20px; }
 }
 </style>
 </head>
@@ -964,11 +1070,34 @@ textarea { grid-column: 1 / -1; min-height: 180px; resize: vertical; }
     ${cards || `<div class="empty">👑 No scripts yet.<br>Upload your first Lua script above.</div>`}
   </section>
 </main>
+
+<!-- Edit Modal -->
+<div class="modal-overlay" id="editModal">
+  <div class="modal">
+    <h3>✏️ Edit Script Source</h3>
+    <label for="editName">Script Name</label>
+    <input id="editName" placeholder="Script name...">
+    <div style="height:14px"></div>
+    <label>Source Code</label>
+    <div class="modal-file-row">
+      <label class="modal-file-label" for="editFileInput">📁 Replace with File</label>
+      <input id="editFileInput" type="file" accept=".lua,.txt,text/plain">
+      <span id="editFileName">No file selected</span>
+    </div>
+    <textarea id="editSource" placeholder="Paste your Lua source here..."></textarea>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeEdit()">Cancel</button>
+      <button class="btn-save" id="editSaveBtn" onclick="saveEdit()">💾 Save Changes</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const fileInput = document.getElementById("fileInput");
 const fileName = document.getElementById("fileName");
 const scriptName = document.getElementById("scriptName");
 const scriptSource = document.getElementById("scriptSource");
+let editingScriptId = null;
 
 fileInput.addEventListener("change", function() {
   const file = this.files[0];
@@ -1030,6 +1159,84 @@ async function copyLoaderCode(loaderCode) {
 
 function openLoader(url) { window.open(url, "_blank"); }
 function openStats() { window.scrollTo(0, 0); }
+
+/* ── Edit Modal ── */
+async function openEdit(scriptId) {
+  editingScriptId = scriptId;
+  const modal = document.getElementById("editModal");
+  const nameEl = document.getElementById("editName");
+  const srcEl = document.getElementById("editSource");
+  const fileEl = document.getElementById("editFileInput");
+  const fileNameEl = document.getElementById("editFileName");
+  fileEl.value = "";
+  fileNameEl.textContent = "No file selected";
+  nameEl.value = "Loading...";
+  srcEl.value = "Loading...";
+  modal.classList.add("show");
+  try {
+    const r = await fetch("/api/scripts/" + scriptId + "/source");
+    const d = await r.json();
+    if (!r.ok) { alert(d.error || "Failed to load script"); closeEdit(); return; }
+    nameEl.value = d.name;
+    srcEl.value = d.source || "";
+  } catch {
+    alert("Failed to load script source");
+    closeEdit();
+  }
+}
+
+function closeEdit() {
+  document.getElementById("editModal").classList.remove("show");
+  editingScriptId = null;
+}
+
+document.getElementById("editFileInput").addEventListener("change", function() {
+  const file = this.files[0];
+  if (!file) return;
+  const fn = file.name.toLowerCase();
+  if (!fn.endsWith(".lua") && !fn.endsWith(".txt")) {
+    alert("Only .lua or .txt files are allowed!"); this.value = ""; return;
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    alert("Maximum file size is 10MB."); this.value = ""; return;
+  }
+  document.getElementById("editFileName").textContent = file.name;
+  const reader = new FileReader();
+  reader.onload = e => { document.getElementById("editSource").value = e.target.result; };
+  reader.readAsText(file);
+});
+
+async function saveEdit() {
+  if (!editingScriptId) return;
+  const name = document.getElementById("editName").value.trim();
+  const source = document.getElementById("editSource").value;
+  if (!name) { alert("Script name cannot be empty!"); return; }
+  if (!source.trim()) { alert("Source code cannot be empty!"); return; }
+  const btn = document.getElementById("editSaveBtn");
+  btn.disabled = true;
+  btn.textContent = "Saving...";
+  try {
+    const r = await fetch("/api/scripts/" + editingScriptId, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, source })
+    });
+    const d = await r.json();
+    if (!r.ok) { alert(d.error || "Failed to save"); btn.disabled = false; btn.textContent = "💾 Save Changes"; return; }
+    location.reload();
+  } catch {
+    alert("Server error!");
+    btn.disabled = false;
+    btn.textContent = "💾 Save Changes";
+  }
+}
+
+document.getElementById("editModal").addEventListener("click", e => {
+  if (e.target.id === "editModal") closeEdit();
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && document.getElementById("editModal").classList.contains("show")) closeEdit();
+});
 </script>
 </body>
 </html>`);
