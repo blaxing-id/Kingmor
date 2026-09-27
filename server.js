@@ -434,6 +434,29 @@ app.delete("/api/scripts/internal/:id", requireInternalSecret, (req, res) => {
   res.json({ success: true, name: script.name });
 });
 
+// ==================== PANEL LIMIT CHECK ====================
+app.get("/api/panels/count", requireInternalSecret, (req, res) => {
+  const ownerId = req.query.ownerId;
+  if (!ownerId) return res.status(400).json({ error: "ownerId required" });
+  const botConfig = readBotConfig();
+  let count = 0;
+  for (const guildId of Object.keys(botConfig)) {
+    const g = botConfig[guildId];
+    if (g && String(g.panelOwnerId) === String(ownerId) && g.panelScriptId) {
+      count++;
+    }
+  }
+  const premium = isPremium(ownerId);
+  const max = premium ? 5 : 2;
+  res.json({
+    count,
+    max,
+    premium,
+    remaining: Math.max(0, max - count),
+    canCreate: count < max,
+  });
+});
+
 // ==================== PREMIUM API ====================
 
 app.get("/api/premium/status", requireInternalSecret, (req, res) => {
@@ -1105,6 +1128,15 @@ body { min-height: 100vh; font-family: 'Segoe UI', Arial, Helvetica, sans-serif;
 .section-head h2 { font-size: 19px; color: #ffd700; font-weight: 800; }
 .section-head .line { flex: 1; height: 1px; background: linear-gradient(90deg, rgba(255,200,0,.5), transparent); }
 
+/* ========== PANEL LIMIT WARNING ========== */
+.panel-limit { padding: 12px 16px; border-radius: 12px; margin-bottom: 14px;
+  background: rgba(255,200,0,.08); border: 1px solid rgba(255,200,0,.25);
+  font-size: 12px; color: rgba(255,255,255,.8); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.panel-limit .icon { font-size: 18px; }
+.panel-limit strong { color: #ffd700; }
+.panel-limit.full { background: rgba(255,77,77,.08); border-color: rgba(255,77,77,.3); }
+.panel-limit.full strong { color: #ff4d4d; }
+
 /* ========== PREMIUM SHOWCASE ========== */
 .showcase { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
 @media (max-width: 720px) { .showcase { grid-template-columns: 1fr; } }
@@ -1318,9 +1350,40 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
     <div class="stat-card"><div class="value">${totalKeys}</div><div class="label">Total Keys</div></div>
   </div>
 
+  <!-- UPLOAD -->
+  <div class="section-head">
+    <h2>📤 Protect Your Scripts</h2>
+    <div class="line"></div>
+  </div>
+
+  <section class="hero">
+    <h2>👑 Upload Script</h2>
+    <p>Upload a Lua/TXT file or paste your source manually.</p>
+    <div class="form-grid">
+      <input id="scriptName" placeholder="Script name...">
+      <div class="file-row">
+        <label class="file-label" for="fileInput">📁 Upload File</label>
+        <input id="fileInput" type="file" accept=".lua,.txt,text/plain">
+        <span class="file-name" id="fileName">No file selected</span>
+      </div>
+      <textarea id="scriptSource" placeholder="Paste your Lua source here..."></textarea>
+      <button class="upload-button" onclick="uploadScript()">👑 Protect &amp; Upload</button>
+    </div>
+  </section>
+
+  <!-- SCRIPTS -->
+  <div class="section-head">
+    <h2>📜 Your Scripts</h2>
+    <div class="line"></div>
+  </div>
+
+  <section class="scripts">
+    ${cards || `<div class="empty">👑 No scripts yet.<br>Upload your first Lua script above.</div>`}
+  </section>
+
   <!-- TIER COMPARISON -->
   <div class="section-head">
-    <h2>💎 Plans & Features</h2>
+    <h2>💎 Plans &amp; Features</h2>
     <div class="line"></div>
   </div>
 
@@ -1337,11 +1400,12 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
       <ul class="tier-features">
         <li class="free-text"><span class="ok">✓</span> Upload unlimited scripts</li>
         <li class="free-text"><span class="ok">✓</span> Key system &amp; HWID lock</li>
-        <li class="free-text"><span class="ok">✓</span> <strong>/setuppanel</strong> for Discord</li>
+        <li class="free-text"><span class="ok">✓</span> <strong>/setuppanel</strong> — <strong>up to 2 panels max</strong></li>
         <li class="free-text"><span class="ok">✓</span> <strong>/genkey</strong>, <strong>/whitelist</strong> (max 30 days)</li>
         <li class="free-text"><span class="ok">✓</span> <strong>/blacklist</strong> user &amp; <strong>/unblacklist</strong> user</li>
-        <li class="free-text"><span class="ok">✓</span> <strong>/freemode</strong>, <strong>/setwebhook</strong></li>
+        <li class="free-text"><span class="ok">✓</span> <strong>/setwebhook</strong></li>
         <li class="free-text"><span class="ok">✓</span> Self HWID reset (1 day cooldown)</li>
+        <li class="free-text"><span class="no">✗</span> <strong>/freemode</strong> — Premium only</li>
         <li class="free-text"><span class="no">✗</span> <strong>/blacklistrole</strong> — Blacklist roles</li>
         <li class="free-text"><span class="no">✗</span> <strong>/unblacklist role</strong> — Unblacklist roles</li>
         <li class="free-text"><span class="no">✗</span> <strong>/cooldownhwid</strong> — Custom HWID cooldown</li>
@@ -1361,6 +1425,8 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
       </div>
       <ul class="tier-features">
         <li class="premium-text"><span class="ok">✓</span> <strong>Everything in Free</strong></li>
+        <li class="premium-text"><span class="ok">✓</span> <strong>/setuppanel</strong> — <strong>up to 5 panels max</strong></li>
+        <li class="premium-text"><span class="ok">✓</span> <strong>/freemode</strong> — Enable free mode for any script</li>
         <li class="premium-text"><span class="ok">✓</span> <strong>/blacklistrole</strong> — Blacklist roles from your scripts</li>
         <li class="premium-text"><span class="ok">✓</span> <strong>/unblacklist role</strong> — Unblacklist roles</li>
         <li class="premium-text"><span class="ok">✓</span> <strong>/cooldownhwid</strong> — Set custom HWID cooldown (e.g. <code>30m</code>, <code>1h</code>, <code>3d</code>)</li>
@@ -1405,37 +1471,6 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
       </div>
     </div>
   </div>
-
-  <!-- UPLOAD -->
-  <div class="section-head">
-    <h2>📤 Protect Your Scripts</h2>
-    <div class="line"></div>
-  </div>
-
-  <section class="hero">
-    <h2>👑 Upload Script</h2>
-    <p>Upload a Lua/TXT file or paste your source manually.</p>
-    <div class="form-grid">
-      <input id="scriptName" placeholder="Script name...">
-      <div class="file-row">
-        <label class="file-label" for="fileInput">📁 Upload File</label>
-        <input id="fileInput" type="file" accept=".lua,.txt,text/plain">
-        <span class="file-name" id="fileName">No file selected</span>
-      </div>
-      <textarea id="scriptSource" placeholder="Paste your Lua source here..."></textarea>
-      <button class="upload-button" onclick="uploadScript()">👑 Protect &amp; Upload</button>
-    </div>
-  </section>
-
-  <!-- SCRIPTS -->
-  <div class="section-head">
-    <h2>📜 Your Scripts</h2>
-    <div class="line"></div>
-  </div>
-
-  <section class="scripts">
-    ${cards || `<div class="empty">👑 No scripts yet.<br>Upload your first Lua script above.</div>`}
-  </section>
 
 </main>
 
