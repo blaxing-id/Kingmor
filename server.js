@@ -4,6 +4,10 @@ const path = require("path");
 const crypto = require("crypto");
 const session = require("express-session");
 const axios = require("axios");
+const { spawn } = require("child_process");
+
+// ==================== KINGMOR OBFUSCATOR (built-in, no external deps) ====================
+const { obfuscate: kmObfuscate } = require("./obfuscator");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -55,6 +59,17 @@ if (!API_SECRET) {
   console.error("❌ FATAL: env var API_SECRET is not set!");
   process.exit(1);
 }
+
+// ==================== OBFUSCATOR WRAPPER ====================
+
+async function obfuscate(source) {
+  if (!source || typeof source !== "string") {
+    throw new Error("Source must be a string");
+  }
+  return await kmObfuscate(source, DISCORD_INVITE);
+}
+
+// ==================== FILE HELPERS ====================
 
 function readDB() {
   try { return JSON.parse(fs.readFileSync(DB_FILE, "utf8")); } catch { return []; }
@@ -320,11 +335,14 @@ app.get("/api/scripts/:id/source", requireAuth, (req, res) => {
     id: script.id,
     name: script.name,
     enabled: script.enabled,
+    obfuscated: script.obfuscated || false,
+    originalSize: script.originalSize || null,
+    obfuscatedSize: script.obfuscatedSize || null,
     source: fs.readFileSync(filepath, "utf8"),
   });
 });
 
-app.post("/api/scripts", requireAuth, (req, res) => {
+app.post("/api/scripts", requireAuth, async (req, res) => {
   const { name, source, guildId } = req.body;
   if (!name || typeof name !== "string") return res.status(400).json({ error: "Script name is required" });
   if (!source || typeof source !== "string") return res.status(400).json({ error: "Lua source is required" });
@@ -332,13 +350,30 @@ app.post("/api/scripts", requireAuth, (req, res) => {
 
   const id = generateId();
   const filename = `${id}.lua`;
-  fs.writeFileSync(path.join(SCRIPTS_DIR, filename), source, "utf8");
+
+  let finalSource = source;
+  let obfuscated = false;
+  let obfError = null;
+
+  try {
+    finalSource = await obfuscate(source);
+    obfuscated = true;
+    console.log(`🔒 Auto-obfuscated (KingmorArmor): "${name}" (${source.length} → ${finalSource.length} bytes)`);
+  } catch (err) {
+    obfError = err.message;
+    console.error(`⚠️  Obfuscation failed, saving raw source: ${err.message}`);
+  }
+
+  fs.writeFileSync(path.join(SCRIPTS_DIR, filename), finalSource, "utf8");
 
   const script = {
     id, name: name.trim().slice(0, 100), filename, enabled: true,
     ownerId: String(req.session.user.id), ownerUsername: req.session.user.username,
     guildId: guildId || null, createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    obfuscated,
+    originalSize: source.length,
+    obfuscatedSize: finalSource.length,
   };
 
   const db = readDB();
@@ -350,12 +385,14 @@ app.post("/api/scripts", requireAuth, (req, res) => {
   const base = getBaseUrl(req);
   res.json({
     success: true,
+    obfuscated,
+    obfuscationError: obfError,
     script: { id: script.id, name: script.name, enabled: script.enabled, createdAt: script.createdAt },
     loader: `${base}/api/loader/${id}.lua`,
   });
 });
 
-app.put("/api/scripts/:id", requireAuth, (req, res) => {
+app.put("/api/scripts/:id", requireAuth, async (req, res) => {
   const { name, source } = req.body;
   const db = readDB();
   const script = db.find((x) => x.id === req.params.id);
@@ -376,8 +413,21 @@ app.put("/api/scripts/:id", requireAuth, (req, res) => {
     if (source.length > 10 * 1024 * 1024) {
       return res.status(413).json({ error: "File too large. Maximum 10MB." });
     }
+
+    let finalSource = source;
+    try {
+      finalSource = await obfuscate(source);
+      script.obfuscated = true;
+      script.originalSize = source.length;
+      script.obfuscatedSize = finalSource.length;
+      console.log(`🔒 Auto-obfuscated updated script (KingmorArmor): "${script.name}"`);
+    } catch (err) {
+      console.error(`⚠️  Obfuscation failed on update: ${err.message}`);
+      script.obfuscated = false;
+    }
+
     const filepath = path.join(SCRIPTS_DIR, script.filename);
-    fs.writeFileSync(filepath, source, "utf8");
+    fs.writeFileSync(filepath, finalSource, "utf8");
   }
 
   script.updatedAt = new Date().toISOString();
@@ -1053,6 +1103,9 @@ app.get("/", requireAuth, (req, res) => {
     const loaderPage = `${base}/api/loader/${script.id}.lua`;
     const loaderCodeDisplay = `loadstring(game:HttpGet("${base}/api/loader/${script.id}.lua"))()`;
     const updatedAt = script.updatedAt ? new Date(script.updatedAt).toLocaleString() : "-";
+    const obfBadge = script.obfuscated
+      ? `<span class="obf-badge on">🔒 KingmorArmor</span>`
+      : `<span class="obf-badge off">🔓 Raw</span>`;
     return `
 <div class="script-card">
   <div class="script-info">
@@ -1060,7 +1113,7 @@ app.get("/", requireAuth, (req, res) => {
     <div>
       <div class="script-name">${escapeHtml(script.name)}</div>
       <div class="script-status ${script.enabled ? "on" : "off"}">
-        ${script.enabled ? "● Enabled" : "● Disabled"}
+        ${script.enabled ? "● Enabled" : "● Disabled"} ${obfBadge}
       </div>
       <div class="script-updated">Updated: ${escapeHtml(updatedAt)}</div>
     </div>
@@ -1093,7 +1146,6 @@ body { min-height: 100vh; font-family: 'Segoe UI', Arial, Helvetica, sans-serif;
   background: radial-gradient(circle at 10% 0%, rgba(255,200,0,.20), transparent 30%),
               radial-gradient(circle at 90% 100%, rgba(100,100,100,.15), transparent 35%), #0a0a0a; }
 
-/* ========== HEADER ========== */
 .header { padding: 16px 24px; display: flex; align-items: center; justify-content: space-between;
   border-bottom: 1px solid rgba(255,200,0,.2);
   background: linear-gradient(90deg, #8a6d00, #ffd700, #0a0a0a); flex-wrap: wrap; gap: 12px; }
@@ -1112,10 +1164,8 @@ body { min-height: 100vh; font-family: 'Segoe UI', Arial, Helvetica, sans-serif;
   border: none; border-radius: 8px; background: #5865F2; color: white;
   font-size: 12px; font-weight: 700; cursor: pointer; text-decoration: none; }
 
-/* ========== CONTAINER ========== */
 .container { width: min(1100px, calc(100% - 24px)); margin: 28px auto; }
 
-/* ========== STATS ========== */
 .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 22px; }
 .stat-card { padding: 18px 14px; border-radius: 15px;
   background: linear-gradient(145deg, rgba(30,30,30,.95), rgba(15,15,15,.98));
@@ -1123,21 +1173,10 @@ body { min-height: 100vh; font-family: 'Segoe UI', Arial, Helvetica, sans-serif;
 .stat-card .value { font-size: 26px; font-weight: 850; color: #ffd700; }
 .stat-card .label { font-size: 11px; color: rgba(255,255,255,.5); margin-top: 5px; letter-spacing: .5px; text-transform: uppercase; }
 
-/* ========== SECTION TITLE ========== */
 .section-head { display: flex; align-items: center; gap: 10px; margin: 26px 0 14px; }
 .section-head h2 { font-size: 19px; color: #ffd700; font-weight: 800; }
 .section-head .line { flex: 1; height: 1px; background: linear-gradient(90deg, rgba(255,200,0,.5), transparent); }
 
-/* ========== PANEL LIMIT WARNING ========== */
-.panel-limit { padding: 12px 16px; border-radius: 12px; margin-bottom: 14px;
-  background: rgba(255,200,0,.08); border: 1px solid rgba(255,200,0,.25);
-  font-size: 12px; color: rgba(255,255,255,.8); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.panel-limit .icon { font-size: 18px; }
-.panel-limit strong { color: #ffd700; }
-.panel-limit.full { background: rgba(255,77,77,.08); border-color: rgba(255,77,77,.3); }
-.panel-limit.full strong { color: #ff4d4d; }
-
-/* ========== PREMIUM SHOWCASE ========== */
 .showcase { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
 @media (max-width: 720px) { .showcase { grid-template-columns: 1fr; } }
 
@@ -1172,14 +1211,13 @@ body { min-height: 100vh; font-family: 'Segoe UI', Arial, Helvetica, sans-serif;
   border-bottom: 1px dashed rgba(255,255,255,.06); }
 .tier-features li:last-child { border-bottom: none; }
 .tier-features li .ok { color: #54ff88; font-weight: 900; flex-shrink: 0; }
-.tier-features li .no { color: #ff4d4d; font-weight: 900; flex-shrink: 0; }
+.tier-features li .no { color: #ff4d4d; font-weight: 900; flex-shrink:0; }
 .tier-features li.free-text { color: rgba(255,255,255,.7); }
 .tier-features li.premium-text { color: rgba(255,255,255,.9); }
 .tier-features li.premium-text strong { color: #ffd700; }
 .tier-features li code { background: rgba(255,200,0,.12); border: 1px solid rgba(255,200,0,.3);
   padding: 1px 6px; border-radius: 5px; color: #ffd700; font-size: 11px; font-family: 'Courier New', monospace; }
 
-/* ========== HOW TO BUY ========== */
 .howto { padding: 22px; border-radius: 18px; margin-bottom: 22px;
   background: linear-gradient(135deg, rgba(255,200,0,.10), rgba(100,100,100,.05));
   border: 1px solid rgba(255,200,0,.3); position: relative; overflow: hidden; }
@@ -1214,7 +1252,6 @@ body { min-height: 100vh; font-family: 'Segoe UI', Arial, Helvetica, sans-serif;
   box-shadow: 0 0 25px rgba(255,200,0,.35); }
 .join-btn.buy:hover { transform: translateY(-2px); filter: brightness(1.08); }
 
-/* ========== HERO UPLOAD ========== */
 .hero { padding: 26px 24px; border-radius: 20px;
   background: linear-gradient(135deg, rgba(255,200,0,.10), rgba(100,100,100,.05));
   border: 1px solid rgba(255,200,0,.2); }
@@ -1239,7 +1276,6 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
   transition: transform .2s, filter .2s; }
 .upload-button:hover { transform: translateY(-2px); filter: brightness(1.05); }
 
-/* ========== SCRIPTS LIST ========== */
 .scripts { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px,1fr)); gap: 14px; }
 .script-card { position: relative; display: flex; align-items: center; justify-content: space-between;
   padding: 16px; border-radius: 16px; background: linear-gradient(145deg, #1a1a1a, #0d0d0d);
@@ -1253,6 +1289,10 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
 .script-status { margin-top: 3px; font-size: 11px; font-weight: 700; }
 .script-status.on { color: #54ff88; }
 .script-status.off { color: #ff4d4d; }
+.obf-badge { display: inline-block; padding: 1px 7px; border-radius: 10px;
+  font-size: 10px; font-weight: 800; margin-left: 6px; letter-spacing: .3px; }
+.obf-badge.on { background: rgba(84,255,136,.15); color: #54ff88; border: 1px solid rgba(84,255,136,.35); }
+.obf-badge.off { background: rgba(255,77,77,.15); color: #ff4d4d; border: 1px solid rgba(255,77,77,.35); }
 .script-updated { margin-top: 2px; font-size: 10px; color: rgba(255,255,255,.35); }
 .script-menu { position: relative; flex-shrink: 0; }
 .dots { width: 38px; height: 38px; border: none; border-radius: 10px; background: #1c1c1c;
@@ -1270,7 +1310,6 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
 .empty { padding: 50px 20px; text-align: center; color: #666;
   border: 1px dashed rgba(255,200,0,.2); border-radius: 18px; font-size: 14px; }
 
-/* ========== TIER BADGE ========== */
 .tier-badge { display: inline-flex; align-items: center; gap: 6px;
   padding: 6px 14px; border-radius: 20px; font-size: 11px; font-weight: 900;
   letter-spacing: .5px; text-transform: uppercase; }
@@ -1279,7 +1318,6 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
 .tier-badge.free { background: rgba(255,255,255,.08); color: rgba(255,255,255,.65);
   border: 1px solid rgba(255,255,255,.15); }
 
-/* ========== MODAL ========== */
 .modal-overlay { display: none; position: fixed; inset: 0; z-index: 999;
   background: rgba(0,0,0,.75); backdrop-filter: blur(6px);
   align-items: center; justify-content: center; padding: 16px; }
@@ -1310,7 +1348,6 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
 #editFileInput { display: none; }
 #editFileName { color: #888; font-size: 11px; }
 
-/* ========== RESPONSIVE ========== */
 @media(max-width:700px) {
   .header { padding: 14px; }
   .user-name { display: none; }
@@ -1343,14 +1380,12 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
 
 <main class="container">
 
-  <!-- STATS -->
   <div class="stats-row">
     <div class="stat-card"><div class="value">${userScripts.length}</div><div class="label">Total Scripts</div></div>
     <div class="stat-card"><div class="value">${userScripts.filter(s => s.enabled).length}</div><div class="label">Enabled</div></div>
     <div class="stat-card"><div class="value">${totalKeys}</div><div class="label">Total Keys</div></div>
   </div>
 
-  <!-- UPLOAD -->
   <div class="section-head">
     <h2>📤 Protect Your Scripts</h2>
     <div class="line"></div>
@@ -1358,7 +1393,7 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
 
   <section class="hero">
     <h2>👑 Upload Script</h2>
-    <p>Upload a Lua/TXT file or paste your source manually.</p>
+    <p>Upload a Lua/TXT file or paste your source manually. Auto-protected with KingmorArmor on upload.</p>
     <div class="form-grid">
       <input id="scriptName" placeholder="Script name...">
       <div class="file-row">
@@ -1371,7 +1406,6 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
     </div>
   </section>
 
-  <!-- SCRIPTS -->
   <div class="section-head">
     <h2>📜 Your Scripts</h2>
     <div class="line"></div>
@@ -1381,14 +1415,12 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
     ${cards || `<div class="empty">👑 No scripts yet.<br>Upload your first Lua script above.</div>`}
   </section>
 
-  <!-- TIER COMPARISON -->
   <div class="section-head">
     <h2>💎 Plans &amp; Features</h2>
     <div class="line"></div>
   </div>
 
   <div class="showcase">
-    <!-- FREE -->
     <div class="tier-card free">
       <div class="tier-header">
         <div class="tier-title free-title">
@@ -1414,7 +1446,6 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
       </ul>
     </div>
 
-    <!-- PREMIUM -->
     <div class="tier-card premium">
       <div class="tier-header">
         <div class="tier-title premium-title">
@@ -1438,7 +1469,6 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
     </div>
   </div>
 
-  <!-- HOW TO BUY / RULES -->
   <div class="section-head">
     <h2>🎫 How to Buy Premium</h2>
     <div class="line"></div>
@@ -1474,7 +1504,6 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
 
 </main>
 
-<!-- EDIT MODAL -->
 <div class="modal-overlay" id="editModal">
   <div class="modal">
     <h3>✏️ Edit Script Source</h3>
@@ -1540,6 +1569,9 @@ async function uploadScript() {
     });
     const d = await r.json();
     if (!r.ok) { alert(d.error || "Upload failed"); return; }
+    if (d.obfuscationError) {
+      alert("⚠️ Upload berhasil tapi proteksi gagal: " + d.obfuscationError + "\\nScript disimpan sebagai raw.");
+    }
     location.reload();
   } catch { alert("Server error!"); }
 }
@@ -1563,7 +1595,6 @@ async function copyLoaderCode(loaderCode) {
 function openLoader(url) { window.open(url, "_blank"); }
 function openStats() { window.scrollTo({ top: 0, behavior: "smooth" }); }
 
-/* EDIT MODAL */
 async function openEdit(scriptId) {
   editingScriptId = scriptId;
   const modal = document.getElementById("editModal");
