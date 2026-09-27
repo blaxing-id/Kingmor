@@ -39,6 +39,9 @@ if (missing.length > 0) {
 
 CONFIG.apiBase = CONFIG.apiBase.replace(/\/+$/, "");
 
+// Owner ID yang boleh pakai /premiumwhitelist
+const OWNER_ID = "1485940617342353594";
+
 const DATA_DIR = path.join(__dirname, "data");
 const KEYS_FILE = path.join(DATA_DIR, "keys.json");
 const CONFIG_FILE = path.join(DATA_DIR, "botconfig.json");
@@ -239,6 +242,7 @@ const webhookTempData = new Map();
 const blacklistRoleTempData = new Map();
 const cooldownTempData = new Map();
 const resetHwidUserTempData = new Map();
+const premiumWhitelistTempData = new Map();
 
 // ==================== GUILDS LIST ====================
 async function updateGuildsList() {
@@ -354,6 +358,33 @@ const commands = [
     .setName("premiuminfo")
     .setDescription("View premium info, price, and how to buy"),
 
+  // ==================== PREMIUMWHITELIST (OWNER ONLY) ====================
+  new SlashCommandBuilder()
+    .setName("premiumwhitelist")
+    .setDescription("[OWNER ONLY] Grant or revoke Premium access for a user")
+    .addSubcommand(sub =>
+      sub.setName("add")
+        .setDescription("Grant Premium access to a user")
+        .addUserOption(o => o.setName("user").setDescription("User to grant Premium").setRequired(true))
+        .addStringOption(o => o.setName("duration")
+          .setDescription("Duration (e.g. 7d, 30d, 1y, lifetime)")
+          .setRequired(true))
+    )
+    .addSubcommand(sub =>
+      sub.setName("remove")
+        .setDescription("Revoke Premium access from a user")
+        .addUserOption(o => o.setName("user").setDescription("User to revoke Premium").setRequired(true))
+    )
+    .addSubcommand(sub =>
+      sub.setName("list")
+        .setDescription("List all Premium users")
+    )
+    .addSubcommand(sub =>
+      sub.setName("check")
+        .setDescription("Check Premium status of a user")
+        .addUserOption(o => o.setName("user").setDescription("User to check").setRequired(true))
+    ),
+
   new SlashCommandBuilder()
     .setName("clearcache")
     .setDescription("Clear script cache (admin only)")
@@ -382,6 +413,7 @@ client.once("ready", async () => {
     console.log(`🔗 API_BASE: ${CONFIG.apiBase}`);
     console.log(`💎 Premium: ${PREMIUM_INFO.priceIDR} / ${PREMIUM_INFO.priceUSD}`);
     console.log(`📢 Discord: ${PREMIUM_INFO.discord}`);
+    console.log(`🔐 Owner ID: ${OWNER_ID}`);
     await updateGuildsList();
     setInterval(updateGuildsList, 60 * 1000);
   } catch (err) {
@@ -532,7 +564,6 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
-      // ==================== RESET HWID (self-service with cooldown) ====================
       if (customId.startsWith("reset_hwid:") || customId === "reset_hwid") {
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
         try {
@@ -721,7 +752,6 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
-      // ==================== COOLDOWNHWID SELECT ====================
       if (interaction.customId === "cooldownhwid_select") {
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
         try {
@@ -746,7 +776,6 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
-      // ==================== RESETHWIDUSER SELECT ====================
       if (interaction.customId === "resethwiduser_select") {
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
         try {
@@ -769,7 +798,6 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
-      // ==================== BLACKLISTROLE SELECT ====================
       if (interaction.customId.startsWith("blacklistrole_select:")) {
         await interaction.deferReply({ ephemeral: false }).catch(() => {});
         try {
@@ -1016,7 +1044,191 @@ client.on("interactionCreate", async interaction => {
     if (interaction.isChatInputCommand()) {
       const commandName = interaction.commandName;
 
-      // ==================== PREMIUMINFO ====================
+      // ==================== PREMIUMWHITELIST (OWNER ONLY) ====================
+      if (commandName === "premiumwhitelist") {
+        // HANYA owner ID yang bisa pakai
+        if (interaction.user.id !== OWNER_ID) {
+          return interaction.reply({
+            content: "❌ This command is restricted to the bot owner only.",
+            ephemeral: true
+          }).catch(() => {});
+        }
+
+        await interaction.deferReply({ ephemeral: true }).catch(() => {});
+        const sub = interaction.options.getSubcommand();
+
+        try {
+          // ============ ADD ============
+          if (sub === "add") {
+            const targetUser = interaction.options.getUser("user");
+            const durationInput = interaction.options.getString("duration").trim().toLowerCase();
+
+            let expiry = null;
+            let durationLabel = "Lifetime";
+
+            if (durationInput !== "lifetime" && durationInput !== "forever" && durationInput !== "0") {
+              const ms = parseDuration(durationInput);
+              if (!ms) {
+                return interaction.editReply({
+                  content: "❌ Invalid duration format. Use `7d`, `30d`, `1y`(not supported—use days), `12h`, or `lifetime`.\n\nSupported units: `m` (minutes), `h` (hours), `d` (days), `w` (weeks)."
+                }).catch(() => {});
+              }
+              // Cek juga "y" untuk year
+              const yearMatch = durationInput.match(/^(\d+)\s*y$/);
+              if (yearMatch) {
+                const years = parseInt(yearMatch[1]);
+                expiry = new Date(Date.now() + years * 365 * 86400000).toISOString();
+                durationLabel = `${years} year(s)`;
+              } else {
+                expiry = new Date(Date.now() + ms).toISOString();
+                durationLabel = formatDuration(ms);
+              }
+            }
+
+            const premium = readPremium();
+            const isNew = !premium[String(targetUser.id)];
+            premium[String(targetUser.id)] = {
+              expiry,
+              since: premium[String(targetUser.id)]?.since || new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              grantedBy: interaction.user.id
+            };
+            writePremium(premium);
+
+            // Sync ke server
+            try {
+              await axios.post(`${CONFIG.apiBase}/api/premium/set`, {
+                userId: targetUser.id,
+                expiry
+              }, { headers: internalHeaders, timeout: 8000 });
+            } catch (err) {
+              console.error(`⚠️ Failed to sync premium to server: ${describeAxiosError(err)}`);
+            }
+
+            const embed = new EmbedBuilder()
+              .setTitle("👑 Premium Granted")
+              .setDescription(`<@${targetUser.id}> has been granted **Kingmor Premium**!`)
+              .setColor(0xFFD700)
+              .addFields(
+                { name: "👤 User", value: `<@${targetUser.id}>`, inline: true },
+                { name: "🆔 ID", value: targetUser.id, inline: true },
+                { name: "⏱️ Duration", value: durationLabel, inline: true },
+                { name: "📅 Expiry", value: expiry ? new Date(expiry).toLocaleString() : "♾️ Lifetime", inline: false },
+                { name: "🔄 Status", value: isNew ? "🆕 New Premium" : "🔁 Extended", inline: true }
+              )
+              .setFooter({ text: "Kingmor 👑" })
+              .setTimestamp();
+
+            return interaction.editReply({ embeds: [embed] }).catch(() => {});
+          }
+
+          // ============ REMOVE ============
+          if (sub === "remove") {
+            const targetUser = interaction.options.getUser("user");
+            const premium = readPremium();
+
+            if (!premium[String(targetUser.id)]) {
+              return interaction.editReply({
+                content: `❌ <@${targetUser.id}> is not a Premium user.`
+              }).catch(() => {});
+            }
+
+            delete premium[String(targetUser.id)];
+            writePremium(premium);
+
+            try {
+              await axios.post(`${CONFIG.apiBase}/api/premium/set`, {
+                userId: targetUser.id,
+                remove: true
+              }, { headers: internalHeaders, timeout: 8000 });
+            } catch (err) {
+              console.error(`⚠️ Failed to sync premium removal to server: ${describeAxiosError(err)}`);
+            }
+
+            const embed = new EmbedBuilder()
+              .setTitle("🚫 Premium Revoked")
+              .setDescription(`<@${targetUser.id}>'s Premium access has been **removed**.`)
+              .setColor(0xFF4D4D)
+              .setTimestamp();
+
+            return interaction.editReply({ embeds: [embed] }).catch(() => {});
+          }
+
+          // ============ LIST ============
+          if (sub === "list") {
+            const premium = readPremium();
+            const entries = Object.entries(premium);
+
+            if (entries.length === 0) {
+              return interaction.editReply({ content: "📭 No Premium users yet." }).catch(() => {});
+            }
+
+            let list = "👑 **PREMIUM USERS**\n\n";
+            let activeCount = 0;
+            let expiredCount = 0;
+
+            const sorted = entries.sort((a, b) => {
+              const aE = a[1].expiry ? new Date(a[1].expiry).getTime() : Infinity;
+              const bE = b[1].expiry ? new Date(b[1].expiry).getTime() : Infinity;
+              return aE - bE;
+            });
+
+            for (const [userId, data] of sorted.slice(0, 25)) {
+              const isExpired = data.expiry && new Date(data.expiry) < new Date();
+              if (isExpired) expiredCount++; else activeCount++;
+
+              const statusIcon = isExpired ? "❌" : "✅";
+              const expiryText = data.expiry
+                ? (isExpired ? `Expired ${new Date(data.expiry).toLocaleDateString()}` : `Until ${new Date(data.expiry).toLocaleDateString()}`)
+                : "♾️ Lifetime";
+
+              list += `${statusIcon} <@${userId}>\n`;
+              list += `   └ \`${userId}\` • ${expiryText}\n\n`;
+            }
+
+            list += `📊 **Total**: ${entries.length} | ✅ Active: ${activeCount} | ❌ Expired: ${expiredCount}`;
+            if (entries.length > 25) list += `\n\n_Showing first 25 entries_`;
+            if (list.length > 2000) list = list.slice(0, 1990) + "\n...";
+
+            return interaction.editReply({ content: list }).catch(() => {});
+          }
+
+          // ============ CHECK ============
+          if (sub === "check") {
+            const targetUser = interaction.options.getUser("user");
+            const premium = readPremium();
+            const entry = premium[String(targetUser.id)];
+
+            if (!entry) {
+              return interaction.editReply({
+                content: `🆓 <@${targetUser.id}> is **not** a Premium user.`
+              }).catch(() => {});
+            }
+
+            const isExpired = entry.expiry && new Date(entry.expiry) < new Date();
+
+            const embed = new EmbedBuilder()
+              .setTitle("👑 Premium Status")
+              .setColor(isExpired ? 0xFF4D4D : 0xFFD700)
+              .addFields(
+                { name: "👤 User", value: `<@${targetUser.id}>`, inline: true },
+                { name: "🆔 ID", value: targetUser.id, inline: true },
+                { name: "📊 Status", value: isExpired ? "❌ Expired" : "✅ Active", inline: true },
+                { name: "📅 Since", value: entry.since ? new Date(entry.since).toLocaleString() : "Unknown", inline: false },
+                { name: "⏱️ Expiry", value: entry.expiry ? new Date(entry.expiry).toLocaleString() : "♾️ Lifetime", inline: false }
+              )
+              .setFooter({ text: "Kingmor 👑" })
+              .setTimestamp();
+
+            return interaction.editReply({ embeds: [embed] }).catch(() => {});
+          }
+
+        } catch (err) {
+          console.error("❌ premiumwhitelist error:", err);
+          return interaction.editReply({ content: "❌ Failed to process command." }).catch(() => {});
+        }
+      }
+
       if (commandName === "premiuminfo") {
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
         const premium = await checkPremium(interaction.user.id);
@@ -1274,7 +1486,6 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
-      // ==================== COOLDOWNHWID (PREMIUM) ====================
       if (commandName === "cooldownhwid") {
         if (!hasPermission(interaction.member, interaction.guildId)) {
           return interaction.reply({ content: "❌ No permission.", ephemeral: true }).catch(() => {});
@@ -1330,7 +1541,6 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
-      // ==================== RESETHWIDUSER (PREMIUM) ====================
       if (commandName === "resethwiduser") {
         if (!hasPermission(interaction.member, interaction.guildId)) {
           return interaction.reply({ content: "❌ No permission.", ephemeral: true }).catch(() => {});
@@ -1396,7 +1606,6 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
-      // ==================== WHITELIST (guild-based) ====================
       if (commandName === "whitelist") {
         if (!hasPermission(interaction.member, interaction.guildId)) {
           return interaction.reply({ content: "❌ No permission.", ephemeral: true }).catch(() => {});
@@ -1411,7 +1620,6 @@ client.on("interactionCreate", async interaction => {
             return interaction.editReply({ content: "❌ Select a user or role!" }).catch(() => {});
           }
 
-          // FREE: max 30 days. PREMIUM: lifetime allowed
           const isPrem = await checkPremium(interaction.user.id);
           if (!isPrem && days === 0) {
             return interaction.editReply({
@@ -1570,7 +1778,6 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
-      // ==================== BLACKLISTROLE (PREMIUM) ====================
       if (commandName === "blacklistrole") {
         if (!hasPermission(interaction.member, interaction.guildId)) {
           return interaction.reply({ content: "❌ No permission.", ephemeral: true }).catch(() => {});
@@ -1590,7 +1797,6 @@ client.on("interactionCreate", async interaction => {
             return interaction.editReply({ content: "❌ You don't have any scripts yet." }).catch(() => {});
           }
 
-          // Jika hanya 1 script → langsung blacklist role untuk script itu
           if (myScripts.length === 1) {
             const scriptId = myScripts[0].id;
             const bl = readBlacklist();
@@ -1611,7 +1817,6 @@ client.on("interactionCreate", async interaction => {
             }).catch(() => {});
           }
 
-          // Jika lebih dari 1 script → tampilkan dropdown
           const options = myScripts.sort((a, b) => a.name.localeCompare(b.name)).slice(0, 25).map(s =>
             new StringSelectMenuOptionBuilder()
               .setLabel(s.name.length > 50 ? s.name.slice(0, 47) + "..." : s.name)
@@ -1632,7 +1837,6 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
-      // ==================== UNBLACKLIST (user + role) ====================
       if (commandName === "unblacklist") {
         if (!hasPermission(interaction.member, interaction.guildId)) {
           return interaction.reply({ content: "❌ No permission.", ephemeral: true }).catch(() => {});
@@ -1646,7 +1850,6 @@ client.on("interactionCreate", async interaction => {
             return interaction.editReply({ content: "❌ Select a user or role to unblacklist!" }).catch(() => {});
           }
 
-          // Role unblacklist hanya untuk premium
           if (targetRole) {
             const isPrem = await checkPremium(interaction.user.id);
             if (!isPrem) {
