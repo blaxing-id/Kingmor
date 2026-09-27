@@ -12,7 +12,6 @@
     "axios": "^1.6.2",
     "discord.js": "^14.14.1",
     "concurrently": "^8.2.2",
-    "clyde": "^1.0.0"
   },
   "engines": {
     "node": ">=18.0.0"
