@@ -57,73 +57,39 @@ if (!API_SECRET) {
   process.exit(1);
 }
 
-// ==================== OBFUSCATOR (LBO via subprocess) ====================
+// ==================== OBFUSCATOR (Clyde VM) ====================
 
-/**
- * Obfuscate Lua/Luau source using @ihatenodejs/lbo via child_process.
- * LBO adalah CLI tool, bukan library Node.js, jadi harus dipanggil
- * lewat terminal. Kita pakai spawn buat eksekusi.
- */
-function obfuscate(source) {
-  return new Promise((resolve, reject) => {
-    if (!source || typeof source !== "string") {
-      return reject(new Error("Source must be a string"));
-    }
+const clyde = require("clyde");
 
-    const tmpId = crypto.randomBytes(8).toString("hex");
-    const tmpIn = path.join(DATA_DIR, `_tmp_in_${tmpId}.lua`);
-    const tmpOut = path.join(DATA_DIR, `_tmp_out_${tmpId}.lua`);
+async function obfuscate(source) {
+  if (!source || typeof source !== "string") {
+    throw new Error("Source must be a string");
+  }
 
-    fs.writeFileSync(tmpIn, source, "utf8");
+  try {
+    const { lex, parse, obfuscate: clydeObfuscate } = clyde;
 
-    // Panggil bunx lbo obfuscate
-    const proc = spawn("bunx", ["lbo", "obfuscate", tmpIn, "--output", tmpOut], {
-      cwd: __dirname,
-      env: { ...process.env },
-      shell: false,
+    const { tokens } = lex(source);
+    const ast = parse(tokens);
+
+    const result = clydeObfuscate(ast, {
+      renameLocals: true,
+      preserveGlobals: true,
+      encodeStrings: true,
+      scramble: true,
+      noPreserve: false
     });
 
-    let stderr = "";
-    proc.stderr.on("data", (data) => { stderr += data.toString(); });
-
-    proc.on("error", (err) => {
-      cleanup();
-      reject(new Error(`Failed to spawn lbo: ${err.message}`));
-    });
-
-    proc.on("close", (code) => {
-      try {
-        if (code !== 0) {
-          cleanup();
-          return reject(new Error(`lbo exited with code ${code}: ${stderr}`));
-        }
-
-        if (!fs.existsSync(tmpOut)) {
-          cleanup();
-          return reject(new Error("lbo did not produce output file"));
-        }
-
-        const result = fs.readFileSync(tmpOut, "utf8");
-        cleanup();
-
-        const header = `-- This Script Has Been Obf By Kingmor
--- Kingmor Lua Protection System (LBO VM)
+    const header = `-- This Script Has Been Obf By Kingmor
+-- Kingmor Lua Protection System (Clyde VM)
 -- ${DISCORD_INVITE}
 
 `;
 
-        resolve(header + result);
-      } catch (err) {
-        cleanup();
-        reject(err);
-      }
-    });
-
-    function cleanup() {
-      try { if (fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn); } catch {}
-      try { if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut); } catch {}
-    }
-  });
+    return header + result;
+  } catch (err) {
+    throw new Error("Clyde obfuscation failed: " + err.message);
+  }
 }
 
 // ==================== FILE HELPERS ====================
