@@ -1,9 +1,9 @@
+cat > /home/claude/kingmor/obfuscator.js << 'EOF'
 "use strict";
 
 /**
- * Kingmor Lua Obfuscator
- * VM-based obfuscation system
- * Produces output similar to Luraph/SwaveArmor structure
+ * Kingmor Lua Obfuscator v2
+ * Safe variable renaming + string XOR encoding + number obfuscation + VM wrapper
  */
 
 const crypto = require("crypto");
@@ -34,42 +34,31 @@ function xorEncodeString(str, key) {
   return out;
 }
 
-function bytesToLuaTable(bytes) {
-  return "{" + bytes.join(",") + "}";
-}
-
 function encodeNumber(n) {
-  // Encode number sebagai operasi matematika tersembunyi
   const a = randomInt(1, 1000);
   const b = n - a;
-  if (b >= 0) {
-    return `(${a}+${b})`;
-  } else {
-    return `(${a}-${Math.abs(b)})`;
-  }
+  if (b >= 0) return `(${a}+${b})`;
+  return `(${a}-${Math.abs(b)})`;
 }
 
-function shuffleArray(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
+function addJunkCode() {
+  const n1 = randomId(5), n2 = randomId(6), n3 = randomId(4);
+  const v1 = randomInt(1000, 9999), v2 = randomInt(10000, 99999), v3 = randomInt(100, 999);
+  return `local ${n1},${n2},${n3}=${v1},${v2},${v3};`;
 }
 
-// ==================== LUA TOKENIZER (sederhana) ====================
+// ==================== TOKENIZER ====================
 
-function tokenizeLua(source) {
+function tokenize(source) {
   const tokens = [];
   let i = 0;
 
   while (i < source.length) {
-    // Skip whitespace
-    if (/\s/.test(source[i])) {
+    // Whitespace
+    if (/[ \t\r\n]/.test(source[i])) {
       let ws = "";
-      while (i < source.length && /\s/.test(source[i])) ws += source[i++];
-      tokens.push({ type: "WHITESPACE", val: ws });
+      while (i < source.length && /[ \t\r\n]/.test(source[i])) ws += source[i++];
+      tokens.push({ type: "WS", val: ws });
       continue;
     }
 
@@ -91,251 +80,272 @@ function tokenizeLua(source) {
       continue;
     }
 
-    // Long string [[ ... ]]
-    if (source.slice(i, i + 2) === "[[") {
-      let j = i + 2;
-      while (j < source.length && source.slice(j, j + 2) !== "]]") j++;
-      tokens.push({ type: "LONGSTRING", val: source.slice(i, j + 2) });
-      i = j + 2;
-      continue;
+    // Long string [==[ ... ]==] or [[ ... ]]
+    if (source[i] === "[" && (source[i+1] === "[" || source[i+1] === "=")) {
+      let eqCount = 0;
+      let j = i + 1;
+      while (j < source.length && source[j] === "=") { eqCount++; j++; }
+      if (source[j] === "[") {
+        const close = "]" + "=".repeat(eqCount) + "]";
+        j++;
+        let end = source.indexOf(close, j);
+        if (end !== -1) {
+          tokens.push({ type: "LONGSTRING", val: source.slice(i, end + close.length) });
+          i = end + close.length;
+          continue;
+        }
+      }
     }
 
-    // String literal " ... " atau ' ... '
-    if (source[i] === '"' || source[i] === "'") {
-      const quote = source[i];
-      let j = i + 1;
-      let str = quote;
+    // String " ... "
+    if (source[i] === '"') {
+      let j = i + 1, str = '"';
       while (j < source.length) {
-        if (source[j] === "\\" && j + 1 < source.length) {
-          str += source[j] + source[j + 1];
-          j += 2;
-        } else if (source[j] === quote) {
-          str += quote;
-          j++;
-          break;
-        } else {
-          str += source[j++];
-        }
+        if (source[j] === "\\" && j + 1 < source.length) { str += source[j] + source[j+1]; j += 2; }
+        else if (source[j] === '"') { str += '"'; j++; break; }
+        else { str += source[j++]; }
       }
       tokens.push({ type: "STRING", val: str });
-      i = j;
-      continue;
+      i = j; continue;
     }
 
-    // Number
-    if (/[0-9]/.test(source[i]) || (source[i] === "." && /[0-9]/.test(source[i + 1] || ""))) {
-      let num = "";
-      // Hex
-      if (source.slice(i, i + 2) === "0x" || source.slice(i, i + 2) === "0X") {
-        num += source[i++]; num += source[i++];
-        while (i < source.length && /[0-9a-fA-F]/.test(source[i])) num += source[i++];
-      } else {
-        while (i < source.length && /[0-9]/.test(source[i])) num += source[i++];
-        if (i < source.length && source[i] === ".") {
-          num += source[i++];
-          while (i < source.length && /[0-9]/.test(source[i])) num += source[i++];
-        }
-        if (i < source.length && (source[i] === "e" || source[i] === "E")) {
-          num += source[i++];
-          if (source[i] === "+" || source[i] === "-") num += source[i++];
-          while (i < source.length && /[0-9]/.test(source[i])) num += source[i++];
-        }
+    // String ' ... '
+    if (source[i] === "'") {
+      let j = i + 1, str = "'";
+      while (j < source.length) {
+        if (source[j] === "\\" && j + 1 < source.length) { str += source[j] + source[j+1]; j += 2; }
+        else if (source[j] === "'") { str += "'"; j++; break; }
+        else { str += source[j++]; }
       }
-      tokens.push({ type: "NUMBER", val: num });
-      continue;
+      tokens.push({ type: "STRING", val: str });
+      i = j; continue;
+    }
+
+    // Number (hex)
+    if (source.slice(i, i+2) === "0x" || source.slice(i, i+2) === "0X") {
+      let num = source[i++] + source[i++];
+      while (i < source.length && /[0-9a-fA-F]/.test(source[i])) num += source[i++];
+      tokens.push({ type: "NUMBER", val: num }); continue;
+    }
+
+    // Number (decimal)
+    if (/[0-9]/.test(source[i]) || (source[i] === "." && /[0-9]/.test(source[i+1] || ""))) {
+      let num = "";
+      while (i < source.length && /[0-9]/.test(source[i])) num += source[i++];
+      if (i < source.length && source[i] === ".") {
+        num += source[i++];
+        while (i < source.length && /[0-9]/.test(source[i])) num += source[i++];
+      }
+      if (i < source.length && (source[i] === "e" || source[i] === "E")) {
+        num += source[i++];
+        if (source[i] === "+" || source[i] === "-") num += source[i++];
+        while (i < source.length && /[0-9]/.test(source[i])) num += source[i++];
+      }
+      tokens.push({ type: "NUMBER", val: num }); continue;
     }
 
     // Identifier / keyword
     if (/[a-zA-Z_]/.test(source[i])) {
       let id = "";
       while (i < source.length && /[a-zA-Z0-9_]/.test(source[i])) id += source[i++];
-      const keywords = new Set([
+      const KW = new Set([
         "and","break","do","else","elseif","end","false","for","function",
         "goto","if","in","local","nil","not","or","repeat","return","then",
         "true","until","while"
       ]);
-      tokens.push({ type: keywords.has(id) ? "KEYWORD" : "IDENT", val: id });
+      tokens.push({ type: KW.has(id) ? "KW" : "IDENT", val: id });
       continue;
     }
 
-    // Operator / punctuation
-    const two = source.slice(i, i + 2);
-    if (["==","~=","<=",">=","..","::"].includes(two)) {
-      tokens.push({ type: "OP", val: two }); i += 2; continue;
-    }
-    const three = source.slice(i, i + 3);
-    if (three === "...") {
-      tokens.push({ type: "OP", val: "..." }); i += 3; continue;
-    }
+    // 3-char ops
+    if (source.slice(i, i+3) === "...") { tokens.push({ type: "OP", val: "..." }); i += 3; continue; }
+    // 2-char ops
+    const two = source.slice(i, i+2);
+    if (["==","~=","<=",">=","..","::"].includes(two)) { tokens.push({ type: "OP", val: two }); i += 2; continue; }
+    // single char
     tokens.push({ type: "PUNCT", val: source[i++] });
   }
 
   return tokens;
 }
 
-// ==================== VARIABLE RENAMER ====================
+// ==================== SAFE VARIABLE RENAMER ====================
+// Strategy: kumpulkan SEMUA identifier yang dideklarasi sebagai local,
+// lalu rename SEMUA occurrence-nya secara konsisten di seluruh file.
 
-function renameVariables(source) {
-  const tokens = tokenizeLua(source);
+const ROBLOX_GLOBALS = new Set([
+  // Lua builtins
+  "print","tostring","tonumber","type","pairs","ipairs","next","select",
+  "error","assert","pcall","xpcall","rawget","rawset","rawequal","rawlen",
+  "setmetatable","getmetatable","require","load","loadstring","dofile",
+  "loadfile","collectgarbage","unpack","table","string","math","os","io",
+  "coroutine","utf8","bit32","buffer","_G","_ENV","_VERSION",
+  // Roblox globals
+  "game","workspace","script","plugin","shared","Enum","Instance",
+  "Vector3","Vector2","CFrame","Color3","BrickColor","UDim","UDim2",
+  "Ray","Axes","Faces","Region3","TweenInfo","NumberSequence",
+  "ColorSequence","NumberRange","Rect","PhysicalProperties","Random",
+  "task","wait","delay","spawn","tick","time","elapsedTime","DateTime",
+  "typeof","getfenv","setfenv","newproxy","warn","error",
+  "isfile","readfile","writefile","listfiles","delfile","makefolder",
+  "getgenv","getrenv","getsenv","getconnections","firetouchinterest",
+  "checkcaller","isscriptable","sethiddenproperty","setsimulationradius",
+  "hookfunction","hookmetamethod","newcclosure","clonefunction",
+  "decompile","getscripts","getloadedmodules","getrunningscripts",
+  "setclipboard","toclipboard","getclipboard",
+  // Common service refs
+  "Players","RunService","UserInputService","TweenService","GuiService",
+  "LocalPlayer","Character","Humanoid","HumanoidRootPart","Camera",
+  "CoreGui","PlayerGui","PlayerScripts","ControlModule",
+  // Types
+  "true","false","nil",
+  // Metamethods
+  "__index","__newindex","__call","__tostring","__len","__eq",
+  "__lt","__le","__add","__sub","__mul","__div","__mod","__pow","__unm","__concat",
+]);
 
-  // Kumpulkan semua local variable names
-  const localVars = new Map(); // originalName -> newName
-  const globalReserved = new Set([
-    // Lua builtins
-    "print","tostring","tonumber","type","pairs","ipairs","next","select",
-    "error","assert","pcall","xpcall","rawget","rawset","rawequal","rawlen",
-    "setmetatable","getmetatable","require","load","loadstring","dofile",
-    "loadfile","collectgarbage","gcinfo","newproxy","unpack",
-    // Roblox globals  
-    "game","workspace","script","plugin","shared","_G","_ENV",
-    "Enum","Instance","Vector3","Vector2","CFrame","Color3","BrickColor",
-    "UDim","UDim2","Ray","Axes","Faces","Region3","TweenInfo","NumberSequence",
-    "ColorSequence","NumberRange","Rect","PhysicalProperties","Random",
-    "os","math","string","table","coroutine","io","utf8","bit32","buffer",
-    "task","wait","delay","spawn","tick","time","elapsedTime","DateTime",
-    "game","workspace","script","plugin","shared",
-    // Common Roblox services
-    "Players","RunService","UserInputService","TweenService","GuiService",
-    "LocalPlayer","Character","Humanoid","HumanoidRootPart","Camera",
-    "getfenv","setfenv","typeof","rawget","rawset",
-    // Operators/keywords that appear as values
-    "true","false","nil",
-  ]);
+function safeRenameVariables(tokens) {
+  // Pass 1: Kumpulkan semua nama yang dideklarasi sebagai local
+  // Juga kumpulkan function params
+  const localNames = new Set();
 
-  const nameMap = new Map();
-  let varCounter = 0;
-
-  function genName() {
-    // Buat nama yang susah dibaca (mirip decompiler output)
-    const prefixes = ["l","ll","lI","lll","llI","lIl","lII","I","Il","II","Ill","IlI","IIl","III"];
-    const p = prefixes[varCounter % prefixes.length];
-    const n = Math.floor(varCounter / prefixes.length);
-    varCounter++;
-    return n === 0 ? p : p + n;
-  }
-
-  // Pass 1: identifikasi local declarations
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
-    if (t.type === "KEYWORD" && t.val === "local") {
-      // next non-whitespace
+
+    // local NAME atau local NAME, NAME, ...
+    if (t.type === "KW" && t.val === "local") {
       let j = i + 1;
-      while (j < tokens.length && tokens[j].type === "WHITESPACE") j++;
-      if (j < tokens.length && tokens[j].type === "KEYWORD" && tokens[j].val === "function") {
-        // local function NAME
+      while (j < tokens.length && tokens[j].type === "WS") j++;
+
+      // local function NAME
+      if (j < tokens.length && tokens[j].type === "KW" && tokens[j].val === "function") {
         j++;
-        while (j < tokens.length && tokens[j].type === "WHITESPACE") j++;
+        while (j < tokens.length && tokens[j].type === "WS") j++;
         if (j < tokens.length && tokens[j].type === "IDENT") {
-          const orig = tokens[j].val;
-          if (!globalReserved.has(orig) && !nameMap.has(orig)) {
-            nameMap.set(orig, genName());
-          }
+          localNames.add(tokens[j].val);
         }
-      } else if (j < tokens.length && tokens[j].type === "IDENT") {
-        // local NAME [, NAME]*
-        while (j < tokens.length) {
-          const tk = tokens[j];
-          if (tk.type === "WHITESPACE") { j++; continue; }
-          if (tk.type === "IDENT") {
-            const orig = tk.val;
-            if (!globalReserved.has(orig) && !nameMap.has(orig)) {
-              nameMap.set(orig, genName());
-            }
-            j++;
-          } else if (tk.type === "PUNCT" && tk.val === ",") {
-            j++;
-          } else {
-            break;
-          }
-        }
+        continue;
+      }
+
+      // local NAME [, NAME]* [= ...]
+      while (j < tokens.length) {
+        const tk = tokens[j];
+        if (tk.type === "WS") { j++; continue; }
+        if (tk.type === "IDENT") { localNames.add(tk.val); j++; continue; }
+        if (tk.type === "PUNCT" && tk.val === ",") { j++; continue; }
+        break;
       }
     }
 
-    // function params
-    if (t.type === "KEYWORD" && t.val === "function") {
-      // skip to (
+    // function params: function ... ( PARAMS )
+    if (t.type === "KW" && t.val === "function") {
       let j = i + 1;
-      while (j < tokens.length && tokens[j].type === "WHITESPACE") j++;
-      // bisa: function NAME ( atau function (
-      if (j < tokens.length && tokens[j].type === "IDENT") {
-        // mungkin method a.b.c:d
-        while (j < tokens.length && (tokens[j].type === "IDENT" || (tokens[j].type === "PUNCT" && (tokens[j].val === "." || tokens[j].val === ":")))) j++;
-      }
-      while (j < tokens.length && tokens[j].type === "WHITESPACE") j++;
+      // skip name (bisa a.b.c:d)
+      while (j < tokens.length && tokens[j].type === "WS") j++;
+      while (j < tokens.length && (tokens[j].type === "IDENT" ||
+        (tokens[j].type === "PUNCT" && (tokens[j].val === "." || tokens[j].val === ":")) ||
+        (tokens[j].type === "OP" && tokens[j].val === "::"))) j++;
+      while (j < tokens.length && tokens[j].type === "WS") j++;
+      // parse params
       if (j < tokens.length && tokens[j].type === "PUNCT" && tokens[j].val === "(") {
         j++;
-        // parse params
         while (j < tokens.length) {
           const tk = tokens[j];
-          if (tk.type === "WHITESPACE") { j++; continue; }
+          if (tk.type === "WS") { j++; continue; }
           if (tk.type === "PUNCT" && tk.val === ")") break;
-          if (tk.type === "IDENT") {
-            const orig = tk.val;
-            if (!globalReserved.has(orig) && !nameMap.has(orig)) {
-              nameMap.set(orig, genName());
-            }
-          }
+          if (tk.type === "IDENT") { localNames.add(tk.val); }
           j++;
         }
       }
     }
+
+    // for NAME [, NAME]* in  atau  for NAME = ...
+    if (t.type === "KW" && t.val === "for") {
+      let j = i + 1;
+      while (j < tokens.length) {
+        const tk = tokens[j];
+        if (tk.type === "WS") { j++; continue; }
+        if (tk.type === "IDENT") { localNames.add(tk.val); j++; continue; }
+        if (tk.type === "PUNCT" && tk.val === ",") { j++; continue; }
+        break; // stop at = atau in
+      }
+    }
   }
 
-  // Pass 2: replace
+  // Pass 2: Buat mapping hanya untuk nama yang tidak ada di globals
+  let counter = 0;
+  const prefixes = ["l","ll","lI","lll","llI","lIl","lII","I","Il","II","Ill","IlI","IIl","III","llll","lllI","llIl","llII","lIll","lIlI","lIIl","lIII"];
+
+  function genName() {
+    const p = prefixes[counter % prefixes.length];
+    const n = Math.floor(counter / prefixes.length);
+    counter++;
+    return n === 0 ? p : p + n;
+  }
+
+  const nameMap = new Map();
+  for (const name of localNames) {
+    if (!ROBLOX_GLOBALS.has(name)) {
+      nameMap.set(name, genName());
+    }
+  }
+
+  // Pass 3: Rebuild tokens, skip comments, minify whitespace, rename idents
   let result = "";
-  for (const t of tokens) {
-    if (t.type === "COMMENT") continue; // hapus semua comment
-    if (t.type === "WHITESPACE") {
-      // Minify: ganti newline/whitespace dengan spasi minimal
+  let prevType = null;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+
+    if (t.type === "COMMENT") continue;
+
+    if (t.type === "WS") {
+      // Minify: cukup 1 spasi, kecuali newline antara statement
+      // Tapi kita butuh spasi antara keyword/ident
       result += " ";
-    } else if (t.type === "IDENT" && nameMap.has(t.val)) {
+      prevType = "WS";
+      continue;
+    }
+
+    if (t.type === "IDENT" && nameMap.has(t.val)) {
       result += nameMap.get(t.val);
     } else {
       result += t.val;
     }
+    prevType = t.type;
   }
 
-  return result;
+  return result.trim();
 }
 
 // ==================== STRING OBFUSCATOR ====================
 
-function obfuscateStrings(source, key) {
-  // Extract semua string literal dan encode dengan XOR
+function obfuscateStrings(source) {
   const stringTable = [];
   const stringMap = new Map();
 
-  let result = source.replace(/"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g, (match, d, s) => {
+  const result = source.replace(/"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'/g, (match, d, s) => {
     const raw = d !== undefined ? d : s;
-    // Unescape basic escapes
     let actual;
     try {
-      // parse string Lua sederhana
       actual = raw
-        .replace(/\\n/g, "\n")
-        .replace(/\\t/g, "\t")
-        .replace(/\\r/g, "\r")
-        .replace(/\\\\/g, "\\")
-        .replace(/\\"/g, '"')
-        .replace(/\\'/g, "'")
-        .replace(/\\(\d+)/g, (_, n) => String.fromCharCode(parseInt(n)));
-    } catch {
-      return match;
-    }
+        .replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\r/g, "\r")
+        .replace(/\\\\/g, "\\").replace(/\\"/g, '"').replace(/\\'/g, "'")
+        .replace(/\\(\d{1,3})/g, (_, n) => String.fromCharCode(parseInt(n)));
+    } catch { return match; }
 
-    if (actual.length === 0) return match;
-    if (actual.length > 200) return match; // skip string panjang
+    if (actual.length === 0) return '""';
+    if (actual.length > 300) return match; // skip string sangat panjang
 
     if (stringMap.has(actual)) {
       return `__KM_S__[${stringMap.get(actual)}]`;
     }
 
     const idx = stringTable.length;
-    const xorK = xorKey();
-    const encoded = xorEncodeString(actual, xorK);
-    stringTable.push({ encoded, key: xorK, original: actual });
+    const k = randomInt(1, 255);
+    const encoded = xorEncodeString(actual, k);
+    stringTable.push({ encoded, key: k });
     stringMap.set(actual, idx);
-
     return `__KM_S__[${idx}]`;
   });
 
@@ -345,91 +355,65 @@ function obfuscateStrings(source, key) {
 // ==================== NUMBER OBFUSCATOR ====================
 
 function obfuscateNumbers(source) {
-  return source.replace(/\b(\d+)\b/g, (match, n) => {
+  // Hanya obfuscate integer kecil yang bukan bagian dari string/table index
+  return source.replace(/\b(\d+)\b/g, (match, n, offset, str) => {
+    // Jangan obfuscate kalau sebelumnya ada tanda [ (table index)
+    const before = str[offset - 1];
+    if (before === "[" || before === ".") return match;
     const num = parseInt(n);
-    if (isNaN(num) || num > 100000) return match;
-    if (num === 0) return match;
+    if (isNaN(num) || num > 50000 || num === 0) return match;
     return encodeNumber(num);
   });
 }
 
-// ==================== CONTROL FLOW ====================
-
-function addJunkCode() {
-  // Junk variables yang tidak berpengaruh
-  const names = [randomId(6), randomId(7), randomId(5)];
-  const vals = [randomInt(1000, 9999), randomInt(10000, 99999), randomInt(100, 999)];
-  return `local ${names[0]},${names[1]},${names[2]}=${vals[0]},${vals[1]},${vals[2]};`;
-}
-
 // ==================== VM WRAPPER ====================
 
-function buildVMWrapper(obfuscatedSource, stringTable, discordInvite) {
-  const vmId = randomId(4);
+function buildVMWrapper(code, stringTable, discordInvite) {
   const decryptFn = randomId(6);
-  const strTableName = randomId(5);
+  const strTblName = randomId(5);
   const execFn = randomId(6);
-  const key1 = randomInt(1, 255);
-  const key2 = randomInt(1, 255);
+  const antiDbg = randomId(5);
   const seed = randomInt(100000, 999999);
+  const key1 = randomInt(1, 255);
 
-  // Build encoded string table
-  const encodedTableLines = stringTable.map((entry, i) => {
-    const doubleEncoded = entry.encoded.map(b => (b ^ key1) & 0xff);
-    return `[${i}]=${bytesToLuaTable(doubleEncoded)}`;
+  // Build encoded table
+  const etEntries = stringTable.map((e, i) => {
+    const reEncoded = e.encoded.map(b => (b ^ key1) & 0xff);
+    return `[${i}]={${reEncoded.join(",")}}`;
   });
+  const klEntries = stringTable.map((e, i) => `[${i}]=${e.key}`);
 
-  // Build decode function
-  // Setiap entry punya key sendiri (XOR pertama) + key1 (XOR kedua)
-  const keyTableLines = stringTable.map((entry, i) => {
-    return `[${i}]=${entry.key}`;
-  });
-
-  // Anti-debug checks
-  const antiDebug1 = randomId(5);
-  const antiDebug2 = randomId(6);
-  const checkVar = randomId(4);
-
-  // Build final VM wrapper
-  const vmScript = `-- This script was protected using KingmorArmor v2.0r-gen1 https://discord.gg/QgubzPzzy
-local ${antiDebug1}=debug;local ${antiDebug2}=${seed};local ${checkVar}=os.clock();${addJunkCode()}local function ${decryptFn}(t,k,ks)local o=""for i=1,#t do o=o..string.char(bit32.bxor(t[i],bit32.bxor(k,ks)))end return o end;local ${strTableName}={};do local __et={${encodedTableLines.join(",")}};local __kl={${keyTableLines.join(",")}};for __i=0,${stringTable.length - 1} do local __b=__et[__i];local __k=__kl[__i];local __r="";for __j=1,#__b do __r=__r..string.char(bit32.bxor(__b[__j],bit32.bxor(${key1},__k)))end;${strTableName}[__i]=__r;end;end;${addJunkCode()}local __KM_S__=${strTableName};local function ${execFn}()${addJunkCode()}${obfuscatedSource}end;${addJunkCode()}local __ok,__err=pcall(${execFn});if not __ok then end`;
-
-  return vmScript;
+  return `-- This script was protected using KingmorArmor v2.0r-gen1 ${discordInvite || ""}
+local ${antiDbg}=debug;local ${randomId(6)}=${seed};${addJunkCode()}local function ${decryptFn}(__b,__k,__k2)local __o=""for __i=1,#__b do __o=__o..string.char(bit32.bxor(__b[__i],bit32.bxor(__k,__k2)))end return __o end;local ${strTblName}={};do local __et={${etEntries.join(",")}};local __kl={${klEntries.join(",")}};for __i=0,${stringTable.length - 1} do ${strTblName}[__i]=${decryptFn}(__et[__i],${key1},__kl[__i])end end;${addJunkCode()}local __KM_S__=${strTblName};local function ${execFn}()${addJunkCode()}${code} end;local __r,__e=pcall(${execFn});if not __r then end`;
 }
 
-// ==================== MAIN OBFUSCATOR ====================
+// ==================== MAIN ====================
 
 async function obfuscate(source, discordInvite) {
-  if (!source || typeof source !== "string") {
-    throw new Error("Source must be a non-empty string");
-  }
+  if (!source || typeof source !== "string") throw new Error("Source must be a non-empty string");
 
   try {
-    // Step 1: Hapus comment, minify whitespace, rename variables
-    let processed = renameVariables(source);
+    // Step 1: Tokenize
+    const tokens = tokenize(source);
 
-    // Step 2: Obfuscate strings
-    const { result: strObf, stringTable } = obfuscateStrings(processed, xorKey());
+    // Step 2: Rename variables + strip comments + minify
+    const renamed = safeRenameVariables(tokens);
 
-    // Step 3: Obfuscate numbers (hanya jika string table tidak kosong atau source tidak terlalu besar)
-    let numObf = strObf;
-    if (source.length < 500000) {
-      numObf = obfuscateNumbers(strObf);
-    }
+    // Step 3: Obfuscate strings
+    const { result: strObf, stringTable } = obfuscateStrings(renamed);
 
-    // Step 4: Wrap dengan VM + string decoder
-    let final;
-    if (stringTable.length > 0) {
-      final = buildVMWrapper(numObf, stringTable, discordInvite || "");
-    } else {
-      // Tidak ada string untuk di-encode, tetap wrap
-      final = `-- This script was protected using KingmorArmor v2.0r-gen1 https://discord.gg/QgubzPzzy\n${addJunkCode()}${numObf}`;
-    }
+    // Step 4: Obfuscate numbers
+    const numObf = obfuscateNumbers(strObf);
 
+    // Step 5: Wrap
+    const final = buildVMWrapper(numObf, stringTable, discordInvite);
     return final;
+
   } catch (err) {
-    throw new Error("KingmorArmor obfuscation failed: " + err.message);
+    throw new Error("KingmorArmor failed: " + err.message);
   }
 }
 
 module.exports = { obfuscate };
+EOF
+echo "obfuscator.js rewritten"
