@@ -43,26 +43,123 @@ const DATA_DIR = path.join(__dirname, "data");
 const KEYS_FILE = path.join(DATA_DIR, "keys.json");
 const CONFIG_FILE = path.join(DATA_DIR, "botconfig.json");
 const BLACKLIST_FILE = path.join(DATA_DIR, "blacklist.json");
+const PREMIUM_FILE = path.join(DATA_DIR, "premium.json");
+const HWID_COOLDOWN_FILE = path.join(DATA_DIR, "hwid_cooldowns.json");
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(KEYS_FILE)) fs.writeFileSync(KEYS_FILE, "[]", "utf8");
 if (!fs.existsSync(CONFIG_FILE)) fs.writeFileSync(CONFIG_FILE, "{}", "utf8");
 if (!fs.existsSync(BLACKLIST_FILE)) fs.writeFileSync(BLACKLIST_FILE, "[]", "utf8");
+if (!fs.existsSync(PREMIUM_FILE)) fs.writeFileSync(PREMIUM_FILE, "{}", "utf8");
+if (!fs.existsSync(HWID_COOLDOWN_FILE)) fs.writeFileSync(HWID_COOLDOWN_FILE, "{}", "utf8");
 
+// ==================== FILE HELPERS ====================
 function readKeys() { try { return JSON.parse(fs.readFileSync(KEYS_FILE, "utf8")); } catch { return []; } }
 function writeKeys(data) { fs.writeFileSync(KEYS_FILE, JSON.stringify(data, null, 2)); }
 function readConfig() { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8")); } catch { return {}; } }
 function writeConfig(data) { fs.writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2)); }
 function readBlacklist() { try { return JSON.parse(fs.readFileSync(BLACKLIST_FILE, "utf8")); } catch { return []; } }
 function writeBlacklist(data) { fs.writeFileSync(BLACKLIST_FILE, JSON.stringify(data, null, 2)); }
+function readPremium() { try { return JSON.parse(fs.readFileSync(PREMIUM_FILE, "utf8")); } catch { return {}; } }
+function writePremium(data) { fs.writeFileSync(PREMIUM_FILE, JSON.stringify(data, null, 2)); }
 
+// ==================== PREMIUM HELPERS ====================
+const PREMIUM_INFO = {
+  discord: "https://discord.gg/7Sqw6arUM",
+  priceIDR: "Rp 20.000",
+  priceUSD: "$2"
+};
+
+function isPremiumLocal(userId) {
+  const p = readPremium();
+  const entry = p[String(userId)];
+  if (!entry) return false;
+  if (entry.expiry && new Date(entry.expiry) < new Date()) return false;
+  return true;
+}
+
+async function checkPremium(userId) {
+  try {
+    const res = await axios.get(`${CONFIG.apiBase}/api/premium/status`, {
+      headers: internalHeaders, params: { userId }, timeout: 8000
+    });
+    return res.data.premium === true;
+  } catch {
+    return isPremiumLocal(userId);
+  }
+}
+
+function premiumRequiredReply(commandName, extraNote) {
+  const embed = new EmbedBuilder()
+    .setTitle("👑 Premium Feature")
+    .setDescription(
+      `The command \`/${commandName}\` is only available for **Kingmor Premium** users.\n\n` +
+      `**Why upgrade?**\n` +
+      `• 🚫 \`/blacklistrole\` — blacklist roles\n` +
+      `• 🔓 \`/unblacklist role\` — unblacklist roles\n` +
+      `• ⏱️ \`/cooldownhwid\` — custom HWID reset cooldown\n` +
+      `• 🔄 \`/resethwiduser\` — reset HWID for any user\n` +
+      `• ♾️ Lifetime whitelist (no 30-day limit)\n\n` +
+      `**Price:**\n` +
+      `🇮🇩 ${PREMIUM_INFO.priceIDR} • 🌍 ${PREMIUM_INFO.priceUSD}\n\n` +
+      `**How to buy:**\n` +
+      `1. Join our Discord server\n` +
+      `2. Open a **ticket** in the ticket channel\n` +
+      `3. Go to the **purchasing** channel\n` +
+      `4. Follow the instructions to complete your purchase`
+    )
+    .setColor(0xFFD700)
+    .setFooter({ text: "Kingmor 👑" });
+
+  if (extraNote) embed.addFields({ name: "ℹ️ Note", value: extraNote });
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setLabel("💎 Buy Premium")
+      .setStyle(ButtonStyle.Link)
+      .setURL(PREMIUM_INFO.discord)
+  );
+
+  return { embeds: [embed], components: [row], ephemeral: true };
+}
+
+// ==================== DURATION HELPERS ====================
+function parseDuration(str) {
+  const m = String(str).trim().toLowerCase().match(/^(\d+)\s*(s|m|h|d|w)?$/);
+  if (!m) return null;
+  const n = parseInt(m[1]);
+  const unit = (m[2] || "m").toLowerCase();
+  const mult = { s: 1000, m: 60000, h: 3600000, d: 86400000, w: 604800000 }[unit];
+  return n * mult;
+}
+function formatDuration(ms) {
+  if (ms >= 604800000) return `${(ms / 604800000).toFixed(2)} week(s)`;
+  if (ms >= 86400000) return `${(ms / 86400000).toFixed(2)} day(s)`;
+  if (ms >= 3600000) return `${(ms / 3600000).toFixed(2)} hour(s)`;
+  if (ms >= 60000) return `${(ms / 60000).toFixed(2)} minute(s)`;
+  return `${(ms / 1000).toFixed(0)} second(s)`;
+}
+
+// ==================== BLACKLIST HELPERS ====================
 function isBlacklisted(userId) {
   return readBlacklist().some(b => b.type !== "role" && String(b.userId) === String(userId));
 }
 function isRoleBlacklisted(roleId) {
   return readBlacklist().some(b => b.type === "role" && String(b.roleId) === String(roleId));
 }
+async function checkUserBlacklisted(interaction) {
+  if (isBlacklisted(interaction.user.id)) return "user";
+  if (!interaction.guild) return null;
+  try {
+    const member = await interaction.guild.members.fetch(interaction.user.id);
+    for (const roleId of member.roles.cache.keys()) {
+      if (isRoleBlacklisted(roleId)) return roleId;
+    }
+  } catch {}
+  return null;
+}
 
+// ==================== MISC HELPERS ====================
 function generateKey() {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
   return Array.from({ length: 40 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
@@ -84,6 +181,8 @@ function getGuildPanelScript(guildId) {
   return { scriptId, ownerId: ownerId || null };
 }
 
+const internalHeaders = { "x-api-secret": CONFIG.apiSecret };
+
 async function fetchScriptById(scriptId) {
   try {
     const res = await axios.get(`${CONFIG.apiBase}/api/scripts/internal/${scriptId}`, {
@@ -96,22 +195,15 @@ async function fetchScriptById(scriptId) {
   }
 }
 
-const internalHeaders = { "x-api-secret": CONFIG.apiSecret };
-
-const scriptCache = new Map();
-const CACHE_TTL = 30000;
-
-const panelTempData = new Map();
-const buyerRoleTempData = new Map();
-const freeModeTempData = new Map();
-const webhookTempData = new Map();
-const blacklistRoleTempData = new Map();
-
 function describeAxiosError(err) {
   if (err.response) return `HTTP ${err.response.status} — ${JSON.stringify(err.response.data)}`;
   if (err.request) return `No response from server: ${err.code || err.message}`;
   return err.message;
 }
+
+// ==================== CACHE ====================
+const scriptCache = new Map();
+const CACHE_TTL = 30000;
 
 async function getScriptsByOwner(ownerId, { bypassCache = false } = {}) {
   const cacheKey = `scripts_${ownerId}`;
@@ -139,6 +231,16 @@ function clearCache(ownerId) {
   else scriptCache.clear();
 }
 
+// ==================== TEMP DATA ====================
+const panelTempData = new Map();
+const buyerRoleTempData = new Map();
+const freeModeTempData = new Map();
+const webhookTempData = new Map();
+const blacklistRoleTempData = new Map();
+const cooldownTempData = new Map();
+const resetHwidUserTempData = new Map();
+
+// ==================== GUILDS LIST ====================
 async function updateGuildsList() {
   try {
     const guilds = client.guilds.cache.map(g => ({
@@ -153,6 +255,7 @@ async function updateGuildsList() {
   }
 }
 
+// ==================== CLIENT ====================
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
 const commands = [
@@ -183,7 +286,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName("whitelist")
     .setDescription("Whitelist user/role for the script registered in this server")
-    .addIntegerOption(o => o.setName("days").setDescription("Duration in days (0=lifetime)").setRequired(true))
+    .addIntegerOption(o => o.setName("days").setDescription("Duration in days (0=lifetime, PREMIUM only)").setRequired(true))
     .addUserOption(o => o.setName("user").setDescription("User").setRequired(false))
     .addRoleOption(o => o.setName("role").setDescription("Role").setRequired(false)),
 
@@ -195,15 +298,15 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("blacklistrole")
-    .setDescription("Blacklist a role from using scripts")
+    .setDescription("[PREMIUM] Blacklist a role from using scripts")
     .addRoleOption(o => o.setName("role").setDescription("Role to blacklist").setRequired(true))
     .addStringOption(o => o.setName("reason").setDescription("Reason").setRequired(false)),
 
   new SlashCommandBuilder()
     .setName("unblacklist")
-    .setDescription("Unblacklist user or role")
+    .setDescription("Unblacklist user or role (role is PREMIUM only)")
     .addUserOption(o => o.setName("user").setDescription("User").setRequired(false))
-    .addRoleOption(o => o.setName("role").setDescription("Role to unblacklist").setRequired(false)),
+    .addRoleOption(o => o.setName("role").setDescription("Role (PREMIUM only)").setRequired(false)),
 
   new SlashCommandBuilder()
     .setName("revoke")
@@ -234,6 +337,24 @@ const commands = [
     .addUserOption(o => o.setName("user").setDescription("User").setRequired(true)),
 
   new SlashCommandBuilder()
+    .setName("resethwiduser")
+    .setDescription("[PREMIUM] Reset HWID for a specific user on a specific script")
+    .addUserOption(o => o.setName("user").setDescription("Target user").setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName("cooldownhwid")
+    .setDescription("[PREMIUM] Set custom HWID reset cooldown for a script")
+    .addStringOption(o =>
+      o.setName("cooldown")
+        .setDescription("Cooldown duration (e.g. 30m, 1h, 6h, 1d, 3d)")
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("premiuminfo")
+    .setDescription("View premium info, price, and how to buy"),
+
+  new SlashCommandBuilder()
     .setName("clearcache")
     .setDescription("Clear script cache (admin only)")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
@@ -259,6 +380,8 @@ client.once("ready", async () => {
     await rest.put(Routes.applicationCommands(CONFIG.clientId), { body: commands });
     console.log(`👑 Bot ready: ${client.user.tag}`);
     console.log(`🔗 API_BASE: ${CONFIG.apiBase}`);
+    console.log(`💎 Premium: ${PREMIUM_INFO.priceIDR} / ${PREMIUM_INFO.priceUSD}`);
+    console.log(`📢 Discord: ${PREMIUM_INFO.discord}`);
     await updateGuildsList();
     setInterval(updateGuildsList, 60 * 1000);
   } catch (err) {
@@ -276,6 +399,7 @@ client.on("guildDelete", async (guild) => {
   await updateGuildsList();
 });
 
+// ==================== PANEL EMBED ====================
 async function sendPanelEmbed(channel, title, description, scriptId, scriptName, ownerId, guildId) {
   const embed = new EmbedBuilder()
     .setTitle(title)
@@ -306,20 +430,10 @@ async function sendPanelEmbed(channel, title, description, scriptId, scriptName,
   writeConfig(cfg);
 }
 
-// Helper: cek apakah user blacklisted (user-level atau role-level)
-async function checkUserBlacklisted(interaction) {
-  if (isBlacklisted(interaction.user.id)) return "user";
-  try {
-    const member = await interaction.guild.members.fetch(interaction.user.id);
-    for (const roleId of member.roles.cache.keys()) {
-      if (isRoleBlacklisted(roleId)) return roleId;
-    }
-  } catch {}
-  return null;
-}
-
+// ==================== INTERACTION HANDLER ====================
 client.on("interactionCreate", async interaction => {
   try {
+    // Blacklist check untuk semua interaksi di guild
     if ((interaction.isButton() || interaction.isModalSubmit() || interaction.isStringSelectMenu()) && interaction.guild) {
       const blCheck = await checkUserBlacklisted(interaction);
       if (blCheck) {
@@ -418,32 +532,37 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
+      // ==================== RESET HWID (self-service with cooldown) ====================
       if (customId.startsWith("reset_hwid:") || customId === "reset_hwid") {
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
         try {
           const scriptId = customId.includes(":") ? customId.split(":")[1] : null;
-          const keys = readKeys();
-          const userKeys = keys.filter(k => String(k.userId) === String(interaction.user.id));
-          if (userKeys.length === 0) return interaction.editReply({ content: "❌ You don't have any active key!" }).catch(() => {});
-
-          if (scriptId) {
-            const validKey = userKeys.find(k => k.scriptId === scriptId);
-            if (!validKey) return interaction.editReply({ content: "❌ You don't have a key for this script!" }).catch(() => {});
+          if (!scriptId) {
+            return interaction.editReply({ content: "❌ Invalid script reference." }).catch(() => {});
           }
 
-          let resetCount = 0;
-          const updatedKeys = keys.map(k => {
-            if (String(k.userId) === String(interaction.user.id) && (scriptId ? k.scriptId === scriptId : true) && k.hwid) {
-              resetCount++;
-              return { ...k, hwid: null };
-            }
-            return k;
-          });
+          const result = await axios.post(`${CONFIG.apiBase}/api/hwid/reset-self`,
+            { userId: interaction.user.id, scriptId },
+            { headers: internalHeaders, timeout: 8000 }
+          );
 
-          if (resetCount === 0) return interaction.editReply({ content: "ℹ️ No HWID is registered for your key." }).catch(() => {});
-          writeKeys(updatedKeys);
-          return interaction.editReply({ content: "✅ HWID has been reset!" }).catch(() => {});
-        } catch {
+          const data = result.data;
+          if (data.cooldown) {
+            const remaining = formatDuration(data.remainingMs);
+            const cooldownTotal = formatDuration(data.cooldownMs);
+            return interaction.editReply({
+              content: `⏳ You already reset your HWID recently.\n**Cooldown:** ${cooldownTotal}\n**Try again in:** ${remaining}`
+            }).catch(() => {});
+          }
+          if (!data.success) {
+            return interaction.editReply({ content: `❌ ${data.reason || "Failed to reset HWID"}` }).catch(() => {});
+          }
+
+          return interaction.editReply({
+            content: `✅ HWID has been reset!\nYou can reset again in **${formatDuration(data.cooldownMs)}**.`
+          }).catch(() => {});
+        } catch (err) {
+          console.error(`❌ reset_hwid failed: ${describeAxiosError(err)}`);
           return interaction.editReply({ content: "❌ Failed to reset HWID." }).catch(() => {});
         }
       }
@@ -599,6 +718,54 @@ client.on("interactionCreate", async interaction => {
           }).catch(() => {});
         } catch {
           return interaction.editReply({ content: "❌ Failed to load scripts." }).catch(() => {});
+        }
+      }
+
+      // ==================== COOLDOWNHWID SELECT ====================
+      if (interaction.customId === "cooldownhwid_select") {
+        await interaction.deferReply({ ephemeral: true }).catch(() => {});
+        try {
+          const scriptId = interaction.values[0];
+          const temp = cooldownTempData.get(interaction.user.id);
+          if (!temp) return interaction.editReply({ content: "❌ Session expired. Run /cooldownhwid again." }).catch(() => {});
+          cooldownTempData.delete(interaction.user.id);
+
+          await axios.post(`${CONFIG.apiBase}/api/cooldown/set`,
+            { scriptId, userId: interaction.user.id, cooldownMs: temp.ms },
+            { headers: internalHeaders, timeout: 8000 }
+          );
+
+          const myScripts = await getScriptsByOwner(interaction.user.id);
+          const s = myScripts.find(x => x.id === scriptId);
+          return interaction.editReply({
+            content: `✅ HWID reset cooldown for **${s?.name || scriptId}** set to **${formatDuration(temp.ms)}**.`
+          }).catch(() => {});
+        } catch (err) {
+          console.error(`❌ cooldownhwid_select failed: ${describeAxiosError(err)}`);
+          return interaction.editReply({ content: "❌ Failed to set cooldown." }).catch(() => {});
+        }
+      }
+
+      // ==================== RESETHWIDUSER SELECT ====================
+      if (interaction.customId === "resethwiduser_select") {
+        await interaction.deferReply({ ephemeral: true }).catch(() => {});
+        try {
+          const scriptId = interaction.values[0];
+          const temp = resetHwidUserTempData.get(interaction.user.id);
+          if (!temp) return interaction.editReply({ content: "❌ Session expired. Run /resethwiduser again." }).catch(() => {});
+          resetHwidUserTempData.delete(interaction.user.id);
+
+          await axios.post(`${CONFIG.apiBase}/api/hwid/reset`,
+            { userId: temp.targetUserId, scriptId },
+            { headers: internalHeaders, timeout: 8000 }
+          );
+
+          return interaction.editReply({
+            content: `✅ HWID reset for <@${temp.targetUserId}>.`
+          }).catch(() => {});
+        } catch (err) {
+          console.error(`❌ resethwiduser_select failed: ${describeAxiosError(err)}`);
+          return interaction.editReply({ content: "❌ Failed to reset HWID." }).catch(() => {});
         }
       }
 
@@ -849,6 +1016,45 @@ client.on("interactionCreate", async interaction => {
     if (interaction.isChatInputCommand()) {
       const commandName = interaction.commandName;
 
+      // ==================== PREMIUMINFO ====================
+      if (commandName === "premiuminfo") {
+        await interaction.deferReply({ ephemeral: true }).catch(() => {});
+        const premium = await checkPremium(interaction.user.id);
+        const statusText = premium ? "✅ **You are Premium!**" : "🆓 You are currently on the Free plan.";
+
+        const embed = new EmbedBuilder()
+          .setTitle("👑 Kingmor Premium")
+          .setDescription(
+            `${statusText}\n\n` +
+            `**Unlock Premium features:**\n` +
+            `• 🚫 \`/blacklistrole\` — Blacklist roles from using your scripts\n` +
+            `• 🔓 \`/unblacklist role\` — Unblacklist roles\n` +
+            `• ⏱️ \`/cooldownhwid\` — Set custom HWID reset cooldown (default is 1 day)\n` +
+            `• 🔄 \`/resethwiduser\` — Reset HWID for any user on any of your scripts\n` +
+            `• ♾️ **Lifetime whitelist** — Free users are limited to 30 days max\n\n` +
+            `**Price:**\n` +
+            `🇮🇩 Indonesia: **${PREMIUM_INFO.priceIDR}**\n` +
+            `🌍 International: **${PREMIUM_INFO.priceUSD}**\n\n` +
+            `**How to buy:**\n` +
+            `1. Join our Discord server (button below)\n` +
+            `2. Open a **ticket** in the ticket channel\n` +
+            `3. Go to the **purchasing** channel\n` +
+            `4. Follow the instructions to complete your purchase`
+          )
+          .setColor(0xFFD700)
+          .setFooter({ text: "Kingmor 👑" })
+          .setTimestamp();
+
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setLabel("💎 Join & Buy")
+            .setStyle(ButtonStyle.Link)
+            .setURL(PREMIUM_INFO.discord)
+        );
+
+        return interaction.editReply({ embeds: [embed], components: [row] }).catch(() => {});
+      }
+
       if (commandName === "clearcache") {
         if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
           return interaction.reply({ content: "❌ Admin only.", ephemeral: true }).catch(() => {});
@@ -1068,6 +1274,128 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
+      // ==================== COOLDOWNHWID (PREMIUM) ====================
+      if (commandName === "cooldownhwid") {
+        if (!hasPermission(interaction.member, interaction.guildId)) {
+          return interaction.reply({ content: "❌ No permission.", ephemeral: true }).catch(() => {});
+        }
+        const premium = await checkPremium(interaction.user.id);
+        if (!premium) {
+          return interaction.reply(premiumRequiredReply("cooldownhwid")).catch(() => {});
+        }
+
+        await interaction.deferReply({ ephemeral: true }).catch(() => {});
+        try {
+          const input = interaction.options.getString("cooldown").trim().toLowerCase();
+          const ms = parseDuration(input);
+          if (!ms || ms < 60 * 1000) {
+            return interaction.editReply({
+              content: "❌ Invalid duration. Use format like `30m`, `1h`, `6h`, `1d`, `3d`, `1w`. Minimum 1 minute."
+            }).catch(() => {});
+          }
+
+          const myScripts = await getScriptsByOwner(interaction.user.id);
+          if (myScripts.length === 0) {
+            return interaction.editReply({ content: "❌ You don't have any scripts yet." }).catch(() => {});
+          }
+
+          if (myScripts.length === 1) {
+            await axios.post(`${CONFIG.apiBase}/api/cooldown/set`,
+              { scriptId: myScripts[0].id, userId: interaction.user.id, cooldownMs: ms },
+              { headers: internalHeaders, timeout: 8000 }
+            );
+            return interaction.editReply({
+              content: `✅ HWID reset cooldown for **${myScripts[0].name}** set to **${formatDuration(ms)}**.`
+            }).catch(() => {});
+          }
+
+          cooldownTempData.set(interaction.user.id, { ms });
+          setTimeout(() => cooldownTempData.delete(interaction.user.id), 5 * 60 * 1000);
+
+          const options = myScripts.sort((a, b) => a.name.localeCompare(b.name)).slice(0, 25).map(s =>
+            new StringSelectMenuOptionBuilder()
+              .setLabel(s.name.length > 50 ? s.name.slice(0, 47) + "..." : s.name)
+              .setValue(s.id)
+          );
+          const select = new StringSelectMenuBuilder()
+            .setCustomId("cooldownhwid_select").setPlaceholder("Select a script...").addOptions(options);
+
+          return interaction.editReply({
+            content: `Select a script to set cooldown **${formatDuration(ms)}**:`,
+            components: [new ActionRowBuilder().addComponents(select)]
+          }).catch(() => {});
+        } catch (err) {
+          console.error(`❌ cooldownhwid failed: ${describeAxiosError(err)}`);
+          return interaction.editReply({ content: "❌ Failed to set cooldown." }).catch(() => {});
+        }
+      }
+
+      // ==================== RESETHWIDUSER (PREMIUM) ====================
+      if (commandName === "resethwiduser") {
+        if (!hasPermission(interaction.member, interaction.guildId)) {
+          return interaction.reply({ content: "❌ No permission.", ephemeral: true }).catch(() => {});
+        }
+        const premium = await checkPremium(interaction.user.id);
+        if (!premium) {
+          return interaction.reply(premiumRequiredReply("resethwiduser")).catch(() => {});
+        }
+
+        await interaction.deferReply({ ephemeral: true }).catch(() => {});
+        try {
+          const targetUser = interaction.options.getUser("user");
+          const myScripts = await getScriptsByOwner(interaction.user.id);
+          if (myScripts.length === 0) {
+            return interaction.editReply({ content: "❌ You don't have any scripts yet." }).catch(() => {});
+          }
+
+          const keys = readKeys();
+          const myScriptIds = myScripts.map(s => s.id);
+          const targetKeys = keys.filter(k =>
+            String(k.userId) === String(targetUser.id) &&
+            myScriptIds.includes(k.scriptId) &&
+            k.hwid
+          );
+
+          if (targetKeys.length === 0) {
+            return interaction.editReply({
+              content: `❌ <@${targetUser.id}> doesn't have any HWID-bound keys for your scripts.`
+            }).catch(() => {});
+          }
+
+          if (targetKeys.length === 1) {
+            const tk = targetKeys[0];
+            const scriptName = myScripts.find(s => s.id === tk.scriptId)?.name || tk.scriptId;
+            await axios.post(`${CONFIG.apiBase}/api/hwid/reset`,
+              { userId: targetUser.id, scriptId: tk.scriptId },
+              { headers: internalHeaders, timeout: 8000 }
+            );
+            return interaction.editReply({
+              content: `✅ HWID reset for <@${targetUser.id}> on script **${scriptName}**.`
+            }).catch(() => {});
+          }
+
+          resetHwidUserTempData.set(interaction.user.id, { targetUserId: targetUser.id });
+          setTimeout(() => resetHwidUserTempData.delete(interaction.user.id), 5 * 60 * 1000);
+
+          const options = targetKeys.slice(0, 25).map(k => {
+            const scriptName = myScripts.find(s => s.id === k.scriptId)?.name || k.scriptId;
+            return new StringSelectMenuOptionBuilder()
+              .setLabel(scriptName.length > 50 ? scriptName.slice(0, 47) + "..." : scriptName)
+              .setValue(k.scriptId);
+          });
+          const select = new StringSelectMenuBuilder()
+            .setCustomId("resethwiduser_select").setPlaceholder("Select a script...").addOptions(options);
+
+          return interaction.editReply({
+            content: `Select which script's HWID to reset for <@${targetUser.id}>:`,
+            components: [new ActionRowBuilder().addComponents(select)]
+          }).catch(() => {});
+        } catch (err) {
+          console.error(`❌ resethwiduser failed: ${describeAxiosError(err)}`);
+          return interaction.editReply({ content: "❌ Failed to reset HWID." }).catch(() => {});
+        }
+      }
+
       // ==================== WHITELIST (guild-based) ====================
       if (commandName === "whitelist") {
         if (!hasPermission(interaction.member, interaction.guildId)) {
@@ -1081,6 +1409,25 @@ client.on("interactionCreate", async interaction => {
 
           if (!targetUser && !targetRole) {
             return interaction.editReply({ content: "❌ Select a user or role!" }).catch(() => {});
+          }
+
+          // FREE: max 30 days. PREMIUM: lifetime allowed
+          const isPrem = await checkPremium(interaction.user.id);
+          if (!isPrem && days === 0) {
+            return interaction.editReply({
+              content: "❌ **Lifetime whitelist** is a Premium feature.\nFree users can only whitelist up to **30 days**.",
+              components: [new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setLabel("💎 Buy Premium").setStyle(ButtonStyle.Link).setURL(PREMIUM_INFO.discord)
+              )]
+            }).catch(() => {});
+          }
+          if (!isPrem && days > 30) {
+            return interaction.editReply({
+              content: "❌ Free users can only whitelist up to **30 days**.\nUpgrade to Premium for unlimited duration & lifetime.",
+              components: [new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setLabel("💎 Buy Premium").setStyle(ButtonStyle.Link).setURL(PREMIUM_INFO.discord)
+              )]
+            }).catch(() => {});
           }
 
           const guildData = getGuildPanelScript(interaction.guildId);
@@ -1223,11 +1570,16 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
-      // ==================== BLACKLISTROLE ====================
+      // ==================== BLACKLISTROLE (PREMIUM) ====================
       if (commandName === "blacklistrole") {
         if (!hasPermission(interaction.member, interaction.guildId)) {
           return interaction.reply({ content: "❌ No permission.", ephemeral: true }).catch(() => {});
         }
+        const isPrem = await checkPremium(interaction.user.id);
+        if (!isPrem) {
+          return interaction.reply(premiumRequiredReply("blacklistrole")).catch(() => {});
+        }
+
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
         try {
           const role = interaction.options.getRole("role");
@@ -1294,6 +1646,19 @@ client.on("interactionCreate", async interaction => {
             return interaction.editReply({ content: "❌ Select a user or role to unblacklist!" }).catch(() => {});
           }
 
+          // Role unblacklist hanya untuk premium
+          if (targetRole) {
+            const isPrem = await checkPremium(interaction.user.id);
+            if (!isPrem) {
+              return interaction.editReply({
+                content: "❌ Unblacklisting **roles** is a Premium feature.\nYou can still unblacklist users on the Free plan.",
+                components: [new ActionRowBuilder().addComponents(
+                  new ButtonBuilder().setLabel("💎 Buy Premium").setStyle(ButtonStyle.Link).setURL(PREMIUM_INFO.discord)
+                )]
+              }).catch(() => {});
+            }
+          }
+
           const bl = readBlacklist();
           let removed = 0;
 
@@ -1303,7 +1668,6 @@ client.on("interactionCreate", async interaction => {
           }
 
           if (targetRole) {
-            const before = bl.length;
             for (let i = bl.length - 1; i >= 0; i--) {
               if (bl[i].type === "role" && String(bl[i].roleId) === String(targetRole.id)) {
                 bl.splice(i, 1);
@@ -1420,7 +1784,7 @@ client.on("interactionCreate", async interaction => {
           const updatedKeys = keys.map(k => {
             if (String(k.userId) === String(targetUser.id) && k.hwid) {
               resetCount++;
-              return { ...k, hwid: null };
+              return { ...k, hwid: null, lastHwidReset: new Date().toISOString() };
             }
             return k;
           });
@@ -1486,6 +1850,8 @@ client.on("interactionCreate", async interaction => {
             return buyerRoles.includes(r.id) || r.id === cfg.buyerRole;
           });
 
+          const userIsPrem = await checkPremium(targetUser.id);
+
           const embed = new EmbedBuilder()
             .setTitle(`👤 User Info: ${targetUser.username}`)
             .setThumbnail(targetUser.displayAvatarURL())
@@ -1494,7 +1860,8 @@ client.on("interactionCreate", async interaction => {
               { name: "📛 User", value: `<@${targetUser.id}>`, inline: true },
               { name: "🆔 ID", value: targetUser.id, inline: true },
               { name: "🚫 Blacklist", value: isBlacklisted(targetUser.id) ? "❌ Yes" : "✅ No", inline: true },
-              { name: "👑 Buyer Role", value: hasBuyerRole ? "✅ Has" : "❌ Doesn't have", inline: true },
+              { name: "👑 Premium", value: userIsPrem ? "✅ Yes" : "🆓 Free", inline: true },
+              { name: "🎭 Buyer Role", value: hasBuyerRole ? "✅ Has" : "❌ Doesn't have", inline: true },
               { name: "🔑 Key Count", value: String(userKeys.length), inline: true },
               { name: "🖥️ HWID", value: userKeys.some(k => k.hwid) ? "🔒 Bound" : "🔓 Not bound", inline: true }
             )
