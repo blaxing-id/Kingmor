@@ -4,7 +4,16 @@ const path = require("path");
 const crypto = require("crypto");
 const session = require("express-session");
 const axios = require("axios");
-const luaparse = require("luaparse");
+
+// ==== LBO OBFUSCATOR ====
+let lboObfuscate = null;
+try {
+  const lbo = require("@ihatenodejs/lbo");
+  lboObfuscate = lbo.obfuscate;
+  console.log("✅ LBO obfuscator loaded");
+} catch (e) {
+  console.warn("⚠️  LBO not installed. Run: npm install @ihatenodejs/lbo");
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -57,286 +66,57 @@ if (!API_SECRET) {
   process.exit(1);
 }
 
-// ==================== OBFUSCATOR (INLINE) ====================
+// ==================== OBFUSCATOR (LBO) ====================
 
-const RESERVED = new Set([
-  "and","break","do","else","elseif","end","false","for","function","goto",
-  "if","in","local","nil","not","or","repeat","return","then","true","until",
-  "while","self",
-  "print","pairs","ipairs","type","tostring","tonumber","pcall","xpcall",
-  "error","assert","select","next","rawget","rawset","rawequal","rawlen",
-  "getmetatable","setmetatable","require","loadstring","load","unpack",
-  "table","string","math","io","os","coroutine","debug","utf8","bit32","buffer",
-  "task","tick","time","wait","spawn","delay","typeof","newproxy",
-  "getfenv","setfenv","getgenv","getrenv","getreg","gethui",
-  "hookfunction","hookmetamethod","getrawmetatable","setreadonly",
-  "isreadonly","checkcaller","islclosure","getnamecallmethod",
-  "setnamecallmethod","fireclickdetector","getconnections","firesignal",
-  "firetouchinterest","getloadedmodules","getnilinstances","getinstances",
-  "getscripts","getcallingscript","getcustomasset","httpget","http_request",
-  "request","syn","fluxus","krnl","kavo","identifyexecutor","setclipboard",
-  "isfile","writefile","readfile","isfolder","makefolder","delfile","listfiles",
-  "game","workspace","script","shared","_G","_ENV",
-  "Players","RunService","UserInputService","TweenService","HttpService",
-  "LocalPlayer","Character","HumanoidRootPart","Humanoid","PlayerGui",
-  "PlayerScripts","ControlModule","PlayerModule","Camera","CurrentCamera",
-  "GetService","WaitForChild","FindFirstChild","FindFirstChildOfClass",
-  "GetChildren","GetDescendants","IsA","Destroy","Clone","Parent","Name",
-  "Heartbeat","RenderStepped","JumpRequest","InputBegan","InputChanged",
-  "UserInputType","Enum","Instance","Vector3","Color3","UDim","UDim2",
-  "TweenInfo","EasingStyle","EasingDirection","HumanoidStateType",
-  "GetState","ChangeState","Enable","Disconnect","Connect","Wait",
-  "Velocity","RotVelocity","Position","Size","BackgroundColor3","Text",
-  "TextColor3","TextSize","CornerRadius","Thickness","Color","Image",
-  "ClipsDescendants","Active","IgnoreGuiInset","ResetOnSpawn","DisplayOrder",
-  "Visible","TouchEnabled","KeyboardEnabled","IsKeyDown","Jump","PlaceId",
-  "UserId","HttpGet","JSONDecode","JSONEncode","Ray","Raycast","ScreenGui",
-  "Frame","TextLabel","TextButton","ImageLabel","ImageButton","UIGradient",
-  "UICorner","UIStroke","UIListLayout","UIPadding","BillboardGui","SurfaceGui",
-  "ProximityPrompt","Sound","CFrame","Tween","Play","Cancel","Completed",
-  "Linear","Quad","Quint","Back","Bounce","Elastic","Sine","Exponential",
-  "Circular","Cubic","Quart","In","Out","InOut","AssetId","rbxassetid",
-  "Muted","Volume","PlaybackSpeed","Looped","SoundId","TimePosition",
-  "WalkSpeed","JumpPower","JumpHeight","UseJumpPower","Health","MaxHealth",
-  "MoveDirection","CameraSubject","MouseBehavior","MouseIcon",
-  "GetMouse","GetPlayers","GetFullName","GetPropertyChangedSignal",
-  "GetAttribute","SetAttribute","GetAttributes","DisplayName","AccountAge",
-  "MembershipType","Chat","SendAsync","TextChatService","ChatService",
-  "PrimaryPart","Massless","CanCollide","Anchored","Transparency",
-  "Material","Reflectance","Shape","BrickColor","fromRGB","fromHSV",
-  "fromHex","ToHSV","ToHex","Lerp","Dot","Cross","Unit","Magnitude",
-  "new","zero","one","xAxis","yAxis","zAxis","identity","fromEulerAnglesXYZ",
-  "fromEulerAnglesYXZ","Angles","LookVector","RightVector","UpVector",
-  "pivot","fromAxisAngle","fromMatrix","fromOrientation","ToWorldSpace",
-  "ToObjectSpace","ToEulerAnglesXYZ","Components","Inverse","fromScale",
-  "fromOffset","Scale","Offset","X","Y","RaycastParams",
-  "FilterDescendantsInstances","FilterType","IgnoreWater","Whitelist",
-  "Blacklist","FindPartOnRay","Workspace","Subject","Focus","FieldOfView",
-  "ViewportSize","ScreenPointToRay","WorldToScreenPoint","WorldToViewportPoint",
-  "ScreenToWorldPoint","ViewportPointToRay",
-]);
-
-function obfRandomName() {
-  const chars = "abcdefghijklmnopqrstuvwxyz";
-  let s = "_";
-  for (let i = 0; i < 8; i++) s += chars[Math.floor(Math.random() * chars.length)];
-  return s;
-}
-
-function obfRandomKey(len = 16) {
-  return crypto.randomBytes(len).toString("hex").slice(0, len);
-}
-
-function obfWalk(node, visitor) {
-  if (!node || typeof node !== "object") return;
-  if (Array.isArray(node)) {
-    node.forEach((child) => {
-      if (visitor.enter) visitor.enter(child);
-      obfWalk(child, visitor);
-      if (visitor.leave) visitor.leave(child);
-    });
-    return;
-  }
-  if (visitor.enter) visitor.enter(node);
-  for (const key of Object.keys(node)) {
-    if (key === "type") continue;
-    obfWalk(node[key], visitor);
-  }
-  if (visitor.leave) visitor.leave(node);
-}
-
-function obfRenameIdentifiers(ast) {
-  const nameMap = new Map();
-  obfWalk(ast, {
-    enter(node) {
-      if (node.type === "Identifier" && !RESERVED.has(node.name)) {
-        if (!nameMap.has(node.name)) nameMap.set(node.name, obfRandomName());
-      }
-    },
-  });
-  obfWalk(ast, {
-    enter(node) {
-      if (node.type === "Identifier" && nameMap.has(node.name)) {
-        node.name = nameMap.get(node.name);
-      }
-    },
-  });
-  return ast;
-}
-
-function obfEncryptStrings(ast) {
-  const decoderName = obfRandomName();
-  obfWalk(ast, {
-    enter(node) {
-      if (node.type === "StringLiteral") {
-        const plain = node.value;
-        if (!plain || plain.length === 0) return;
-        const key = obfRandomKey(16);
-        const bytes = Buffer.from(plain, "utf8");
-        const nums = [];
-        for (let i = 0; i < bytes.length; i++) {
-          const xored = bytes[i] ^ key.charCodeAt(i % key.length);
-          nums.push((xored + 128) % 1000);
-        }
-        const dataStr = nums.join("/");
-        node.type = "CallExpression";
-        node.base = { type: "Identifier", name: decoderName };
-        node.arguments = [
-          { type: "StringLiteral", value: dataStr, raw: `"${dataStr}"` },
-          { type: "StringLiteral", value: key, raw: `"${key}"` },
-          { type: "NumericLiteral", value: 128 },
-        ];
-      }
-    },
-  });
-  return { ast, decoderName };
-}
-
-function obfGenerate(node, indent = "") {
-  if (!node) return "";
-  if (Array.isArray(node)) return node.map((n) => obfGenerate(n, indent)).join("");
-
-  switch (node.type) {
-    case "Chunk": return obfGenerate(node.body, indent);
-    case "LocalStatement": {
-      const vars = node.variables.map((v) => obfGenerate(v, "")).join(", ");
-      const init = node.init.length ? " = " + node.init.map((i) => obfGenerate(i, "")).join(", ") : "";
-      return `${indent}local ${vars}${init}\n`;
-    }
-    case "AssignmentStatement": {
-      const vars = node.variables.map((v) => obfGenerate(v, "")).join(", ");
-      const init = node.init.map((i) => obfGenerate(i, "")).join(", ");
-      return `${indent}${vars} = ${init}\n`;
-    }
-    case "CallStatement": return `${indent}${obfGenerate(node.expression, "")}\n`;
-    case "ReturnStatement":
-      return `${indent}return${node.arguments.length ? " " + node.arguments.map((a) => obfGenerate(a, "")).join(", ") : ""}\n`;
-    case "IfStatement": {
-      let out = "";
-      node.clauses.forEach((c) => {
-        if (c.type === "IfClause") out += `${indent}if ${obfGenerate(c.condition, "")} then\n`;
-        else if (c.type === "ElseifClause") out += `${indent}elseif ${obfGenerate(c.condition, "")} then\n`;
-        else if (c.type === "ElseClause") out += `${indent}else\n`;
-        out += obfGenerate(c.body, indent + "    ");
-      });
-      out += `${indent}end\n`;
-      return out;
-    }
-    case "ForNumericStatement": {
-      const varName = obfGenerate(node.variable, "");
-      const start = obfGenerate(node.start, "");
-      const end = obfGenerate(node.end, "");
-      const step = node.step ? ", " + obfGenerate(node.step, "") : "";
-      return `${indent}for ${varName} = ${start}, ${end}${step} do\n${obfGenerate(node.body, indent + "    ")}${indent}end\n`;
-    }
-    case "ForGenericStatement": {
-      const vars = node.variables.map((v) => obfGenerate(v, "")).join(", ");
-      const iters = node.iterators.map((i) => obfGenerate(i, "")).join(", ");
-      return `${indent}for ${vars} in ${iters} do\n${obfGenerate(node.body, indent + "    ")}${indent}end\n`;
-    }
-    case "WhileStatement":
-      return `${indent}while ${obfGenerate(node.condition, "")} do\n${obfGenerate(node.body, indent + "    ")}${indent}end\n`;
-    case "RepeatStatement":
-      return `${indent}repeat\n${obfGenerate(node.body, indent + "    ")}${indent}until ${obfGenerate(node.condition, "")}\n`;
-    case "DoStatement":
-      return `${indent}do\n${obfGenerate(node.body, indent + "    ")}${indent}end\n`;
-    case "FunctionDeclaration": {
-      const name = node.identifier ? obfGenerate(node.identifier, "") : "";
-      const params = node.parameters.map((p) => obfGenerate(p, "")).join(", ");
-      return `${indent}function ${name}(${params})\n${obfGenerate(node.body, indent + "    ")}${indent}end\n`;
-    }
-    case "LocalFunctionDeclaration": {
-      const name = obfGenerate(node.identifier, "");
-      const params = node.parameters.map((p) => obfGenerate(p, "")).join(", ");
-      return `${indent}local function ${name}(${params})\n${obfGenerate(node.body, indent + "    ")}${indent}end\n`;
-    }
-    case "Identifier": return node.name;
-    case "StringLiteral": return `"${(node.value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t")}"`;
-    case "NumericLiteral": return String(node.value);
-    case "BooleanLiteral": return node.value ? "true" : "false";
-    case "NilLiteral": return "nil";
-    case "BinaryExpression": return `(${obfGenerate(node.left, "")} ${node.operator} ${obfGenerate(node.right, "")})`;
-    case "LogicalExpression": return `(${obfGenerate(node.left, "")} ${node.operator} ${obfGenerate(node.right, "")})`;
-    case "UnaryExpression": return `(${node.operator}${obfGenerate(node.argument, "")})`;
-    case "CallExpression": {
-      const base = obfGenerate(node.base, "");
-      const args = node.arguments.map((a) => obfGenerate(a, "")).join(", ");
-      return `${base}(${args})`;
-    }
-    case "TableCallExpression":
-      return `${obfGenerate(node.base, "")} ${obfGenerate(node.arguments, "")}`;
-    case "StringCallExpression":
-      return `${obfGenerate(node.base, "")} ${obfGenerate(node.argument, "")}`;
-    case "MemberExpression": {
-      const base = obfGenerate(node.base, "");
-      if (node.indexer === ".") return `${base}.${obfGenerate(node.identifier, "")}`;
-      if (node.indexer === ":") return `${base}:${obfGenerate(node.identifier, "")}`;
-      return `${base}[${obfGenerate(node.index, "")}]`;
-    }
-    case "IndexExpression": return `${obfGenerate(node.base, "")}[${obfGenerate(node.index, "")}]`;
-    case "TableConstructorExpression": {
-      const fields = node.fields.map((f) => obfGenerate(f, "")).join(", ");
-      return `{${fields}}`;
-    }
-    case "TableKey": return `[${obfGenerate(node.key, "")}] = ${obfGenerate(node.value, "")}`;
-    case "TableKeyString": return `${obfGenerate(node.key, "")} = ${obfGenerate(node.value, "")}`;
-    case "TableValue": return obfGenerate(node.value, "");
-    case "VarargLiteral": return "...";
-    case "BreakStatement": return `${indent}break\n`;
-    case "EmptyStatement": return "";
-    default:
-      console.warn(`⚠️  Unknown AST node: ${node.type}`);
-      return "";
-  }
-}
-
-function obfuscate(source) {
+/**
+ * Obfuscate Lua/Luau source using @ihatenodejs/lbo.
+ * LBO is VM-based + control-flow + string encoding, jadi jauh lebih kuat
+ * dari luaparse-based yang lama.
+ *
+ * @param {string} source - Lua/Luau source code
+ * @returns {Promise<string>} - Obfuscated code
+ */
+async function obfuscate(source) {
   if (!source || typeof source !== "string") {
     throw new Error("Source must be a string");
   }
 
-  let ast;
-  try {
-    ast = luaparse.parse(source, { luaVersion: "5.1" });
-  } catch (err) {
-    throw new Error("Lua parse error: " + err.message);
+  if (!lboObfuscate) {
+    throw new Error(
+      "LBO obfuscator is not installed. Run: npm install @ihatenodejs/lbo"
+    );
   }
 
-  ast = obfRenameIdentifiers(ast);
-  const { ast: ast2, decoderName } = obfEncryptStrings(ast);
-  let code = obfGenerate(ast2);
+  // LBO butuh file path (bukan string langsung), jadi kita pakai temp file
+  const tmpId = crypto.randomBytes(8).toString("hex");
+  const tmpIn = path.join(DATA_DIR, `_tmp_in_${tmpId}.lua`);
+  const tmpOut = path.join(DATA_DIR, `_tmp_out_${tmpId}.lua`);
 
-  const decoder = `local ${decoderName} = (function()
-  local function _decode(data, key, offset)
-    local nums = {}
-    local i = 1
-    for numStr in string.gmatch(data, "[^/]+") do
-      nums[i] = tonumber(numStr)
-      i = i + 1
-    end
-    local out = {}
-    local kl = #key
-    for j = 1, #nums do
-      local raw = (nums[j] - offset) % 1000
-      local kb = string.byte(key, ((j - 1) % kl) + 1)
-      out[j] = string.char(bit32.bxor(raw, kb))
-    end
-    return table.concat(out)
-  end
-  return function(d, k, o)
-    return _decode(d, k, o)
-  end
-end)()
+  try {
+    fs.writeFileSync(tmpIn, source, "utf8");
+
+    await lboObfuscate({
+      inputFile: tmpIn,
+      outputFile: tmpOut,
+      chunkSize: 180,     // ukuran chunk bytecode; makin kecil makin aman tapi lebih lambat
+      minify: false,      // jangan minify, biar lebih sulit dibaca (opsional)
+    });
+
+    const result = fs.readFileSync(tmpOut, "utf8");
+
+    // Kasih header biar keliatan hasil obfuscate Kingmor
+    const header = `-- This Script Has Been Obf By Kingmor
+-- Kingmor Lua Protection System (LBO VM)
+-- ${DISCORD_INVITE}
 
 `;
 
-  const header = `-- This Script Has Been Obf By Kingmor
--- Kingmor Lua Protection System
--- https://discord.gg/QgubzPzzy
-
-`;
-
-  return header + decoder + code;
+    return header + result;
+  } finally {
+    // Cleanup temp files
+    try { if (fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn); } catch {}
+    try { if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut); } catch {}
+  }
 }
 
 // ==================== FILE HELPERS ====================
@@ -612,7 +392,7 @@ app.get("/api/scripts/:id/source", requireAuth, (req, res) => {
   });
 });
 
-app.post("/api/scripts", requireAuth, (req, res) => {
+app.post("/api/scripts", requireAuth, async (req, res) => {
   const { name, source, guildId } = req.body;
   if (!name || typeof name !== "string") return res.status(400).json({ error: "Script name is required" });
   if (!source || typeof source !== "string") return res.status(400).json({ error: "Lua source is required" });
@@ -624,10 +404,11 @@ app.post("/api/scripts", requireAuth, (req, res) => {
   let finalSource = source;
   let obfuscated = false;
   let obfError = null;
+
   try {
-    finalSource = obfuscate(source);
+    finalSource = await obfuscate(source);
     obfuscated = true;
-    console.log(`🔒 Auto-obfuscated: "${name}" (${source.length} → ${finalSource.length} bytes)`);
+    console.log(`🔒 Auto-obfuscated (LBO VM): "${name}" (${source.length} → ${finalSource.length} bytes)`);
   } catch (err) {
     obfError = err.message;
     console.error(`⚠️  Obfuscation failed, saving raw source: ${err.message}`);
@@ -661,7 +442,7 @@ app.post("/api/scripts", requireAuth, (req, res) => {
   });
 });
 
-app.put("/api/scripts/:id", requireAuth, (req, res) => {
+app.put("/api/scripts/:id", requireAuth, async (req, res) => {
   const { name, source } = req.body;
   const db = readDB();
   const script = db.find((x) => x.id === req.params.id);
@@ -685,11 +466,11 @@ app.put("/api/scripts/:id", requireAuth, (req, res) => {
 
     let finalSource = source;
     try {
-      finalSource = obfuscate(source);
+      finalSource = await obfuscate(source);
       script.obfuscated = true;
       script.originalSize = source.length;
       script.obfuscatedSize = finalSource.length;
-      console.log(`🔒 Auto-obfuscated updated script: "${script.name}"`);
+      console.log(`🔒 Auto-obfuscated updated script (LBO VM): "${script.name}"`);
     } catch (err) {
       console.error(`⚠️  Obfuscation failed on update: ${err.message}`);
       script.obfuscated = false;
@@ -1373,7 +1154,7 @@ app.get("/", requireAuth, (req, res) => {
     const loaderCodeDisplay = `loadstring(game:HttpGet("${base}/api/loader/${script.id}.lua"))()`;
     const updatedAt = script.updatedAt ? new Date(script.updatedAt).toLocaleString() : "-";
     const obfBadge = script.obfuscated
-      ? `<span class="obf-badge on">🔒 Obfuscated</span>`
+      ? `<span class="obf-badge on">🔒 VM Protected</span>`
       : `<span class="obf-badge off">🔓 Raw</span>`;
     return `
 <div class="script-card">
@@ -1662,7 +1443,7 @@ textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
 
   <section class="hero">
     <h2>👑 Upload Script</h2>
-    <p>Upload a Lua/TXT file or paste your source manually. Auto-obfuscated on upload.</p>
+    <p>Upload a Lua/TXT file or paste your source manually. Auto-obfuscated with LBO VM on upload.</p>
     <div class="form-grid">
       <input id="scriptName" placeholder="Script name...">
       <div class="file-row">
@@ -1947,7 +1728,7 @@ document.addEventListener("keydown", e => {
 
 // ==================== HEALTH CHECK ====================
 app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok", uptime: process.uptime() });
+  res.status(200).json({ status: "ok", uptime: process.uptime(), obfuscator: lboObfuscate ? "lbo" : "none" });
 });
 
 // ==================== START ====================
@@ -1956,4 +1737,5 @@ app.listen(PORT, () => {
   console.log(`API_SECRET loaded: ${API_SECRET ? "yes (" + API_SECRET.length + " chars)" : "NO"}`);
   console.log(`Premium price: ${PREMIUM_PRICE_IDR} / ${PREMIUM_PRICE_USD}`);
   console.log(`Discord invite: ${DISCORD_INVITE}`);
+  console.log(`Obfuscator: ${lboObfuscate ? "LBO (Luau VM-based)" : "❌ NOT LOADED"}`);
 });
