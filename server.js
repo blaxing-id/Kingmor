@@ -18,7 +18,7 @@ const PREMIUM_FILE = path.join(DATA_DIR, "premium.json");
 const HWID_COOLDOWN_FILE = path.join(DATA_DIR, "hwid_cooldowns.json");
 
 const ADMIN_USER_ID = "1485940617342353594";
-const DISCORD_INVITE = "https://discord.gg/7Sqw6arUM";
+const DISCORD_INVITE = "https://discord.gg/QgubzPzzy";
 const PREMIUM_PRICE_IDR = "Rp 20.000";
 const PREMIUM_PRICE_USD = "$2";
 
