@@ -1,12 +1,11 @@
-cat > /home/claude/kingmor/obfuscator.js << 'EOF'
+cat > /home/claude/kingmor/obfuscator.js << 'ENDOFFILE'
 "use strict";
 
 /**
  * Kingmor Lua Obfuscator v2
- * Safe variable renaming + string XOR encoding + number obfuscation + VM wrapper
+ * Variable renaming + string XOR encoding + number obfuscation + VM wrapper
+ * Fixed & improved version
  */
-
-const crypto = require("crypto");
 
 // ==================== UTILITIES ====================
 
@@ -19,10 +18,6 @@ function randomId(len = 8) {
 
 function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-function xorKey() {
-  return randomInt(1, 255);
 }
 
 function xorEncodeString(str, key) {
@@ -169,9 +164,7 @@ function tokenize(source) {
   return tokens;
 }
 
-// ==================== SAFE VARIABLE RENAMER ====================
-// Strategy: kumpulkan SEMUA identifier yang dideklarasi sebagai local,
-// lalu rename SEMUA occurrence-nya secara konsisten di seluruh file.
+// ==================== VARIABLE RENAMER ====================
 
 const ROBLOX_GLOBALS = new Set([
   // Lua builtins
@@ -186,7 +179,7 @@ const ROBLOX_GLOBALS = new Set([
   "Ray","Axes","Faces","Region3","TweenInfo","NumberSequence",
   "ColorSequence","NumberRange","Rect","PhysicalProperties","Random",
   "task","wait","delay","spawn","tick","time","elapsedTime","DateTime",
-  "typeof","getfenv","setfenv","newproxy","warn","error",
+  "typeof","getfenv","setfenv","newproxy","warn",
   "isfile","readfile","writefile","listfiles","delfile","makefolder",
   "getgenv","getrenv","getsenv","getconnections","firetouchinterest",
   "checkcaller","isscriptable","sethiddenproperty","setsimulationradius",
@@ -197,27 +190,24 @@ const ROBLOX_GLOBALS = new Set([
   "Players","RunService","UserInputService","TweenService","GuiService",
   "LocalPlayer","Character","Humanoid","HumanoidRootPart","Camera",
   "CoreGui","PlayerGui","PlayerScripts","ControlModule",
-  // Types
+  // Types/metamethods
   "true","false","nil",
-  // Metamethods
   "__index","__newindex","__call","__tostring","__len","__eq",
   "__lt","__le","__add","__sub","__mul","__div","__mod","__pow","__unm","__concat",
+  // Extra common names
+  "self","arg","debug","string","table","math","os","io",
 ]);
 
 function safeRenameVariables(tokens) {
-  // Pass 1: Kumpulkan semua nama yang dideklarasi sebagai local
-  // Juga kumpulkan function params
   const localNames = new Set();
 
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
 
-    // local NAME atau local NAME, NAME, ...
     if (t.type === "KW" && t.val === "local") {
       let j = i + 1;
       while (j < tokens.length && tokens[j].type === "WS") j++;
 
-      // local function NAME
       if (j < tokens.length && tokens[j].type === "KW" && tokens[j].val === "function") {
         j++;
         while (j < tokens.length && tokens[j].type === "WS") j++;
@@ -227,7 +217,6 @@ function safeRenameVariables(tokens) {
         continue;
       }
 
-      // local NAME [, NAME]* [= ...]
       while (j < tokens.length) {
         const tk = tokens[j];
         if (tk.type === "WS") { j++; continue; }
@@ -237,11 +226,10 @@ function safeRenameVariables(tokens) {
       }
     }
 
-    // function params: function ... ( PARAMS )
     if (t.type === "KW" && t.val === "function") {
       let j = i + 1;
-      // skip name (bisa a.b.c:d)
       while (j < tokens.length && tokens[j].type === "WS") j++;
+      // skip function name (a.b.c:d style)
       while (j < tokens.length && (tokens[j].type === "IDENT" ||
         (tokens[j].type === "PUNCT" && (tokens[j].val === "." || tokens[j].val === ":")) ||
         (tokens[j].type === "OP" && tokens[j].val === "::"))) j++;
@@ -259,7 +247,6 @@ function safeRenameVariables(tokens) {
       }
     }
 
-    // for NAME [, NAME]* in  atau  for NAME = ...
     if (t.type === "KW" && t.val === "for") {
       let j = i + 1;
       while (j < tokens.length) {
@@ -267,12 +254,11 @@ function safeRenameVariables(tokens) {
         if (tk.type === "WS") { j++; continue; }
         if (tk.type === "IDENT") { localNames.add(tk.val); j++; continue; }
         if (tk.type === "PUNCT" && tk.val === ",") { j++; continue; }
-        break; // stop at = atau in
+        break;
       }
     }
   }
 
-  // Pass 2: Buat mapping hanya untuk nama yang tidak ada di globals
   let counter = 0;
   const prefixes = ["l","ll","lI","lll","llI","lIl","lII","I","Il","II","Ill","IlI","IIl","III","llll","lllI","llIl","llII","lIll","lIlI","lIIl","lIII"];
 
@@ -290,29 +276,19 @@ function safeRenameVariables(tokens) {
     }
   }
 
-  // Pass 3: Rebuild tokens, skip comments, minify whitespace, rename idents
   let result = "";
-  let prevType = null;
-
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
-
     if (t.type === "COMMENT") continue;
-
     if (t.type === "WS") {
-      // Minify: cukup 1 spasi, kecuali newline antara statement
-      // Tapi kita butuh spasi antara keyword/ident
       result += " ";
-      prevType = "WS";
       continue;
     }
-
     if (t.type === "IDENT" && nameMap.has(t.val)) {
       result += nameMap.get(t.val);
     } else {
       result += t.val;
     }
-    prevType = t.type;
   }
 
   return result.trim();
@@ -335,7 +311,7 @@ function obfuscateStrings(source) {
     } catch { return match; }
 
     if (actual.length === 0) return '""';
-    if (actual.length > 300) return match; // skip string sangat panjang
+    if (actual.length > 300) return match;
 
     if (stringMap.has(actual)) {
       return `__KM_S__[${stringMap.get(actual)}]`;
@@ -355,9 +331,7 @@ function obfuscateStrings(source) {
 // ==================== NUMBER OBFUSCATOR ====================
 
 function obfuscateNumbers(source) {
-  // Hanya obfuscate integer kecil yang bukan bagian dari string/table index
   return source.replace(/\b(\d+)\b/g, (match, n, offset, str) => {
-    // Jangan obfuscate kalau sebelumnya ada tanda [ (table index)
     const before = str[offset - 1];
     if (before === "[" || before === ".") return match;
     const num = parseInt(n);
@@ -376,27 +350,72 @@ function buildVMWrapper(code, stringTable, discordInvite) {
   const seed = randomInt(100000, 999999);
   const key1 = randomInt(1, 255);
 
-  // Build encoded table
   const etEntries = stringTable.map((e, i) => {
     const reEncoded = e.encoded.map(b => (b ^ key1) & 0xff);
     return `[${i}]={${reEncoded.join(",")}}`;
   });
   const klEntries = stringTable.map((e, i) => `[${i}]=${e.key}`);
 
-  return `-- This script was protected using KingmorArmor v2.0r-gen1 ${discordInvite || ""}
-local ${antiDbg}=debug;local ${randomId(6)}=${seed};${addJunkCode()}local function ${decryptFn}(__b,__k,__k2)local __o=""for __i=1,#__b do __o=__o..string.char(bit32.bxor(__b[__i],bit32.bxor(__k,__k2)))end return __o end;local ${strTblName}={};do local __et={${etEntries.join(",")}};local __kl={${klEntries.join(",")}};for __i=0,${stringTable.length - 1} do ${strTblName}[__i]=${decryptFn}(__et[__i],${key1},__kl[__i])end end;${addJunkCode()}local __KM_S__=${strTblName};local function ${execFn}()${addJunkCode()}${code} end;local __r,__e=pcall(${execFn});if not __r then end`;
+  const inviteStr = discordInvite ? ` ${discordInvite}` : "";
+
+  // Build header with fake protection comment
+  let out = `-- This script was protected using KingmorArmor v2.0r-gen1${inviteStr}\n`;
+
+  // Anti-debug reference + seed junk
+  out += `local ${antiDbg}=debug;`;
+  out += `local ${randomId(6)}=${seed};`;
+  out += `${addJunkCode()}`;
+
+  // Decrypt function using bit32.bxor
+  out += `local function ${decryptFn}(__b,__k,__k2)`;
+  out += `local __o=""`;
+  out += `for __i=1,#__b do `;
+  out += `__o=__o..string.char(bit32.bxor(__b[__i],bit32.bxor(__k,__k2)))`;
+  out += `end `;
+  out += `return __o `;
+  out += `end;`;
+
+  // String table decryption
+  out += `local ${strTblName}={};`;
+  if (stringTable.length > 0) {
+    out += `do `;
+    out += `local __et={${etEntries.join(",")}};`;
+    out += `local __kl={${klEntries.join(",")}};`;
+    out += `for __i=0,${stringTable.length - 1} do `;
+    out += `${strTblName}[__i]=${decryptFn}(__et[__i],${key1},__kl[__i])`;
+    out += `end `;
+    out += `end;`;
+  }
+
+  // Junk + alias
+  out += `${addJunkCode()}`;
+  out += `local __KM_S__=${strTblName};`;
+
+  // Main exec function
+  out += `local function ${execFn}()`;
+  out += `${addJunkCode()}`;
+  out += `${code} `;
+  out += `end;`;
+
+  // Protected call
+  out += `local __r,__e=pcall(${execFn});`;
+  out += `if not __r then end`;
+
+  return out;
 }
 
 // ==================== MAIN ====================
 
 async function obfuscate(source, discordInvite) {
-  if (!source || typeof source !== "string") throw new Error("Source must be a non-empty string");
+  if (!source || typeof source !== "string") {
+    throw new Error("Source must be a non-empty string");
+  }
 
   try {
     // Step 1: Tokenize
     const tokens = tokenize(source);
 
-    // Step 2: Rename variables + strip comments + minify
+    // Step 2: Rename variables + strip comments + minify whitespace
     const renamed = safeRenameVariables(tokens);
 
     // Step 3: Obfuscate strings
@@ -405,7 +424,7 @@ async function obfuscate(source, discordInvite) {
     // Step 4: Obfuscate numbers
     const numObf = obfuscateNumbers(strObf);
 
-    // Step 5: Wrap
+    // Step 5: Wrap in VM
     const final = buildVMWrapper(numObf, stringTable, discordInvite);
     return final;
 
@@ -415,5 +434,5 @@ async function obfuscate(source, discordInvite) {
 }
 
 module.exports = { obfuscate };
-EOF
-echo "obfuscator.js rewritten"
+ENDOFFILE
+echo "Done writing obfuscator.js"
