@@ -4,16 +4,7 @@ const path = require("path");
 const crypto = require("crypto");
 const session = require("express-session");
 const axios = require("axios");
-
-// ==== LBO OBFUSCATOR ====
-let lboObfuscate = null;
-try {
-  const lbo = require("@ihatenodejs/lbo");
-  lboObfuscate = lbo.obfuscate;
-  console.log("✅ LBO obfuscator loaded");
-} catch (e) {
-  console.warn("⚠️  LBO not installed. Run: npm install @ihatenodejs/lbo");
-}
+const { spawn } = require("child_process");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -66,57 +57,73 @@ if (!API_SECRET) {
   process.exit(1);
 }
 
-// ==================== OBFUSCATOR (LBO) ====================
+// ==================== OBFUSCATOR (LBO via subprocess) ====================
 
 /**
- * Obfuscate Lua/Luau source using @ihatenodejs/lbo.
- * LBO is VM-based + control-flow + string encoding, jadi jauh lebih kuat
- * dari luaparse-based yang lama.
- *
- * @param {string} source - Lua/Luau source code
- * @returns {Promise<string>} - Obfuscated code
+ * Obfuscate Lua/Luau source using @ihatenodejs/lbo via child_process.
+ * LBO adalah CLI tool, bukan library Node.js, jadi harus dipanggil
+ * lewat terminal. Kita pakai spawn buat eksekusi.
  */
-async function obfuscate(source) {
-  if (!source || typeof source !== "string") {
-    throw new Error("Source must be a string");
-  }
+function obfuscate(source) {
+  return new Promise((resolve, reject) => {
+    if (!source || typeof source !== "string") {
+      return reject(new Error("Source must be a string"));
+    }
 
-  if (!lboObfuscate) {
-    throw new Error(
-      "LBO obfuscator is not installed. Run: npm install @ihatenodejs/lbo"
-    );
-  }
+    const tmpId = crypto.randomBytes(8).toString("hex");
+    const tmpIn = path.join(DATA_DIR, `_tmp_in_${tmpId}.lua`);
+    const tmpOut = path.join(DATA_DIR, `_tmp_out_${tmpId}.lua`);
 
-  // LBO butuh file path (bukan string langsung), jadi kita pakai temp file
-  const tmpId = crypto.randomBytes(8).toString("hex");
-  const tmpIn = path.join(DATA_DIR, `_tmp_in_${tmpId}.lua`);
-  const tmpOut = path.join(DATA_DIR, `_tmp_out_${tmpId}.lua`);
-
-  try {
     fs.writeFileSync(tmpIn, source, "utf8");
 
-    await lboObfuscate({
-      inputFile: tmpIn,
-      outputFile: tmpOut,
-      chunkSize: 180,     // ukuran chunk bytecode; makin kecil makin aman tapi lebih lambat
-      minify: false,      // jangan minify, biar lebih sulit dibaca (opsional)
+    // Panggil bunx lbo obfuscate
+    const proc = spawn("bunx", ["lbo", "obfuscate", tmpIn, "--output", tmpOut], {
+      cwd: __dirname,
+      env: { ...process.env },
+      shell: false,
     });
 
-    const result = fs.readFileSync(tmpOut, "utf8");
+    let stderr = "";
+    proc.stderr.on("data", (data) => { stderr += data.toString(); });
 
-    // Kasih header biar keliatan hasil obfuscate Kingmor
-    const header = `-- This Script Has Been Obf By Kingmor
+    proc.on("error", (err) => {
+      cleanup();
+      reject(new Error(`Failed to spawn lbo: ${err.message}`));
+    });
+
+    proc.on("close", (code) => {
+      try {
+        if (code !== 0) {
+          cleanup();
+          return reject(new Error(`lbo exited with code ${code}: ${stderr}`));
+        }
+
+        if (!fs.existsSync(tmpOut)) {
+          cleanup();
+          return reject(new Error("lbo did not produce output file"));
+        }
+
+        const result = fs.readFileSync(tmpOut, "utf8");
+        cleanup();
+
+        const header = `-- This Script Has Been Obf By Kingmor
 -- Kingmor Lua Protection System (LBO VM)
 -- ${DISCORD_INVITE}
 
 `;
 
-    return header + result;
-  } finally {
-    // Cleanup temp files
-    try { if (fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn); } catch {}
-    try { if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut); } catch {}
-  }
+        resolve(header + result);
+      } catch (err) {
+        cleanup();
+        reject(err);
+      }
+    });
+
+    function cleanup() {
+      try { if (fs.existsSync(tmpIn)) fs.unlinkSync(tmpIn); } catch {}
+      try { if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut); } catch {}
+    }
+  });
 }
 
 // ==================== FILE HELPERS ====================
@@ -1728,7 +1735,7 @@ document.addEventListener("keydown", e => {
 
 // ==================== HEALTH CHECK ====================
 app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok", uptime: process.uptime(), obfuscator: lboObfuscate ? "lbo" : "none" });
+  res.status(200).json({ status: "ok", uptime: process.uptime() });
 });
 
 // ==================== START ====================
@@ -1737,5 +1744,4 @@ app.listen(PORT, () => {
   console.log(`API_SECRET loaded: ${API_SECRET ? "yes (" + API_SECRET.length + " chars)" : "NO"}`);
   console.log(`Premium price: ${PREMIUM_PRICE_IDR} / ${PREMIUM_PRICE_USD}`);
   console.log(`Discord invite: ${DISCORD_INVITE}`);
-  console.log(`Obfuscator: ${lboObfuscate ? "LBO (Luau VM-based)" : "❌ NOT LOADED"}`);
 });
