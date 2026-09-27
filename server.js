@@ -1,4 +1,4 @@
-const express = require("express");
+mconst express = require("express");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
@@ -14,8 +14,13 @@ const DB_FILE = path.join(DATA_DIR, "scripts.json");
 const KEYS_FILE = path.join(DATA_DIR, "keys.json");
 const BOT_CONFIG_FILE = path.join(DATA_DIR, "botconfig.json");
 const GUILDS_FILE = path.join(DATA_DIR, "guilds.json");
+const PREMIUM_FILE = path.join(DATA_DIR, "premium.json");
+const HWID_COOLDOWN_FILE = path.join(DATA_DIR, "hwid_cooldowns.json");
 
 const ADMIN_USER_ID = "1485940617342353594";
+const DISCORD_INVITE = "https://discord.gg/7Sqw6arUM";
+const PREMIUM_PRICE_IDR = "Rp 20.000";
+const PREMIUM_PRICE_USD = "$2";
 
 fs.mkdirSync(SCRIPTS_DIR, { recursive: true });
 
@@ -23,6 +28,8 @@ if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, "[]", "utf8");
 if (!fs.existsSync(KEYS_FILE)) fs.writeFileSync(KEYS_FILE, "[]", "utf8");
 if (!fs.existsSync(BOT_CONFIG_FILE)) fs.writeFileSync(BOT_CONFIG_FILE, "{}", "utf8");
 if (!fs.existsSync(GUILDS_FILE)) fs.writeFileSync(GUILDS_FILE, "[]", "utf8");
+if (!fs.existsSync(PREMIUM_FILE)) fs.writeFileSync(PREMIUM_FILE, "{}", "utf8");
+if (!fs.existsSync(HWID_COOLDOWN_FILE)) fs.writeFileSync(HWID_COOLDOWN_FILE, "{}", "utf8");
 
 app.use(express.json({ limit: "15mb" }));
 
@@ -66,6 +73,25 @@ function readBotConfig() {
 }
 function writeBotConfig(data) {
   fs.writeFileSync(BOT_CONFIG_FILE, JSON.stringify(data, null, 2));
+}
+function readPremium() {
+  try { return JSON.parse(fs.readFileSync(PREMIUM_FILE, "utf8")); } catch { return {}; }
+}
+function writePremium(data) {
+  fs.writeFileSync(PREMIUM_FILE, JSON.stringify(data, null, 2));
+}
+function readCooldowns() {
+  try { return JSON.parse(fs.readFileSync(HWID_COOLDOWN_FILE, "utf8")); } catch { return {}; }
+}
+function writeCooldowns(data) {
+  fs.writeFileSync(HWID_COOLDOWN_FILE, JSON.stringify(data, null, 2));
+}
+function isPremium(userId) {
+  const p = readPremium();
+  const entry = p[String(userId)];
+  if (!entry) return false;
+  if (entry.expiry && new Date(entry.expiry) < new Date()) return false;
+  return true;
 }
 function generateId() {
   return crypto.randomBytes(7).toString("hex");
@@ -260,7 +286,6 @@ app.get("/api/scripts/internal", requireInternalSecret, (req, res) => {
   );
 });
 
-// Endpoint baru: ambil script by scriptId (untuk lookup owner saat whitelist)
 app.get("/api/scripts/internal/:id", requireInternalSecret, (req, res) => {
   const db = readDB();
   const script = db.find((s) => s.id === req.params.id);
@@ -271,7 +296,6 @@ app.get("/api/scripts/internal/:id", requireInternalSecret, (req, res) => {
   });
 });
 
-// Endpoint baru: ambil source script (untuk edit di dashboard)
 app.get("/api/scripts/:id/source", requireAuth, (req, res) => {
   const db = readDB();
   const script = db.find((s) => s.id === req.params.id);
@@ -318,7 +342,6 @@ app.post("/api/scripts", requireAuth, (req, res) => {
   });
 });
 
-// ==================== EDIT / UPDATE SCRIPT ====================
 app.put("/api/scripts/:id", requireAuth, (req, res) => {
   const { name, source } = req.body;
   const db = readDB();
@@ -398,6 +421,122 @@ app.delete("/api/scripts/internal/:id", requireInternalSecret, (req, res) => {
   res.json({ success: true, name: script.name });
 });
 
+// ==================== PREMIUM API ====================
+
+app.get("/api/premium/status", requireInternalSecret, (req, res) => {
+  const userId = req.query.userId;
+  if (!userId) return res.status(400).json({ error: "userId required" });
+  const premium = isPremium(userId);
+  const p = readPremium();
+  const entry = p[String(userId)] || null;
+  res.json({
+    premium,
+    expiry: entry?.expiry || null,
+    since: entry?.since || null,
+  });
+});
+
+// Admin only: set/remove premium
+app.post("/api/premium/set", requireInternalSecret, (req, res) => {
+  const { userId, expiry, remove } = req.body;
+  if (!userId) return res.status(400).json({ error: "userId required" });
+  const p = readPremium();
+  if (remove) {
+    delete p[String(userId)];
+    writePremium(p);
+    return res.json({ success: true, removed: true });
+  }
+  p[String(userId)] = {
+    expiry: expiry || null,
+    since: p[String(userId)]?.since || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  writePremium(p);
+  res.json({ success: true, premium: true, expiry });
+});
+
+// Public: pricing info (untuk dashboard)
+app.get("/api/premium/info", (req, res) => {
+  res.json({
+    priceIDR: PREMIUM_PRICE_IDR,
+    priceUSD: PREMIUM_PRICE_USD,
+    discord: DISCORD_INVITE,
+  });
+});
+
+// ==================== HWID COOLDOWN API ====================
+
+// Get cooldown config for a script
+app.get("/api/cooldown/:scriptId", requireInternalSecret, (req, res) => {
+  const cooldowns = readCooldowns();
+  const entry = cooldowns[req.params.scriptId] || {};
+  res.json({
+    cooldownMs: entry.cooldownMs || 24 * 60 * 60 * 1000,
+    default: !entry.cooldownMs,
+  });
+});
+
+// Premium only: set cooldown
+app.post("/api/cooldown/set", requireInternalSecret, (req, res) => {
+  const { scriptId, userId, cooldownMs } = req.body;
+  if (!scriptId || !userId) return res.status(400).json({ error: "scriptId and userId required" });
+  if (!isPremium(userId)) return res.status(403).json({ error: "Premium required", premium: false });
+  if (typeof cooldownMs !== "number" || cooldownMs < 60 * 1000) {
+    return res.status(400).json({ error: "cooldownMs must be a number >= 60000 (1 minute)" });
+  }
+  const cooldowns = readCooldowns();
+  if (!cooldowns[scriptId]) cooldowns[scriptId] = {};
+  cooldowns[scriptId] = {
+    cooldownMs,
+    setBy: String(userId),
+    updatedAt: new Date().toISOString(),
+  };
+  writeCooldowns(cooldowns);
+  res.json({ success: true, cooldownMs });
+});
+
+// Reset HWID dengan cooldown check (untuk button self-service)
+app.post("/api/hwid/reset-self", requireInternalSecret, (req, res) => {
+  const { userId, scriptId } = req.body;
+  if (!userId || !scriptId) return res.status(400).json({ error: "userId and scriptId required" });
+
+  const cooldowns = readCooldowns();
+  const entry = cooldowns[scriptId] || {};
+  const cooldownMs = entry.cooldownMs || 24 * 60 * 60 * 1000;
+
+  const keys = readKeys();
+  const userKey = keys.find(k => String(k.userId) === String(userId) && k.scriptId === scriptId);
+  if (!userKey) return res.status(404).json({ error: "No key found for this script" });
+
+  const lastReset = userKey.lastHwidReset ? new Date(userKey.lastHwidReset).getTime() : 0;
+  const now = Date.now();
+  const elapsed = now - lastReset;
+
+  if (lastReset && elapsed < cooldownMs) {
+    const remaining = cooldownMs - elapsed;
+    return res.json({
+      success: false,
+      cooldown: true,
+      remainingMs: remaining,
+      cooldownMs,
+    });
+  }
+
+  if (!userKey.hwid) {
+    return res.json({ success: false, reason: "No HWID registered" });
+  }
+
+  userKey.hwid = null;
+  userKey.lastHwidReset = new Date().toISOString();
+  writeKeys(keys);
+
+  res.json({
+    success: true,
+    cooldownMs,
+    nextResetAt: new Date(now + cooldownMs).toISOString(),
+  });
+});
+
 // ==================== HWID ENDPOINTS ====================
 
 app.get("/api/hwid/check", (req, res) => {
@@ -455,7 +594,7 @@ app.post("/api/hwid/reset", requireInternalSecret, (req, res) => {
     const isScript = scriptId ? k.scriptId === scriptId : true;
     if (isOwner && isScript && k.hwid) {
       resetCount++;
-      return { ...k, hwid: null };
+      return { ...k, hwid: null, lastHwidReset: new Date().toISOString() };
     }
     return k;
   });
@@ -562,7 +701,6 @@ local _km_ok, _km_id = pcall(function()
 end)
 if _km_ok then _km_hwid = tostring(_km_id) end
 
--- Send webhook notification (free mode, does not block)
 pcall(function()
     game:HttpGet("${base}/api/hwid/check?scriptId=${scriptId}&hwid=" .. _km_hwid)
 end)
@@ -653,7 +791,6 @@ ${sourceCode}`;
     return res.status(200).type("text/plain").set("Cache-Control", "no-store").send(wrapped);
   }
 
-  // ── Browser request: show loader page ──
   const uid = req.query.uid || null;
   let userScriptKey = null;
   if (!isFreeMode && uid) {
@@ -817,11 +954,17 @@ app.get("/api/admin/scripts", isAdmin, (req, res) => {
   }));
 });
 
+// Admin: manage premium
+app.get("/api/admin/premium", isAdmin, (req, res) => {
+  res.json(readPremium());
+});
+
 // ==================== ADMIN PAGES ====================
 
 app.get("/admin/dashboard", isAdmin, (req, res) => {
   const db = readDB();
   const keys = readKeys();
+  const premium = readPremium();
   res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -831,7 +974,7 @@ app.get("/admin/dashboard", isAdmin, (req, res) => {
 <style>
 * { box-sizing: border-box; margin:0; padding:0; }
 body { min-height:100vh; font-family: Arial, sans-serif; background: #0a0a0a; color: white;
-  display:flex; align-items:center; justify-content:center; }
+  display:flex; align-items:center; justify-content:center; padding: 20px; }
 .card { max-width:600px; width:100%; padding:40px; border-radius:20px;
   border:1px solid rgba(255,200,0,.25);
   background: linear-gradient(145deg, rgba(30,30,30,.95), rgba(15,15,15,.98));
@@ -853,6 +996,7 @@ h1 { margin-bottom:20px; text-align:center; color: #ffd700; }
   <div class="stat"><span class="label">Total Users</span><span class="value">${new Set(db.map(s => s.ownerId)).size}</span></div>
   <div class="stat"><span class="label">Total Keys</span><span class="value">${keys.length}</span></div>
   <div class="stat"><span class="label">Enabled Scripts</span><span class="value">${db.filter(s => s.enabled).length}</span></div>
+  <div class="stat"><span class="label">Premium Users</span><span class="value">${Object.keys(premium).length}</span></div>
   <div style="text-align:center;"><a class="back" href="/">⬅ Back to Dashboard</a></div>
 </div>
 </body>
@@ -867,6 +1011,30 @@ app.get("/", requireAuth, (req, res) => {
   const user = req.session.user;
   const userScripts = db.filter(s => s.ownerId === userId);
   const totalKeys = readKeys().filter(k => k.createdBy === userId).length;
+  const premiumStatus = isPremium(userId);
+  const premiumData = readPremium()[String(userId)] || null;
+
+  const premiumBadge = premiumStatus
+    ? `<div class="tier-badge premium">👑 PREMIUM${premiumData?.expiry ? ` • Expires ${new Date(premiumData.expiry).toLocaleDateString()}` : ""}</div>`
+    : `<div class="tier-badge free">🆓 FREE</div>`;
+
+  const premiumBanner = premiumStatus ? "" : `
+  <section class="premium-banner">
+    <div class="premium-content">
+      <div class="premium-icon">👑</div>
+      <div class="premium-text">
+        <h3>Upgrade to <span>Kingmor Premium</span></h3>
+        <p>Unlock advanced features: custom HWID cooldown, /blacklistrole, unlimited whitelist duration, and more.</p>
+        <div class="premium-prices">
+          <span class="price">🇮🇩 ${PREMIUM_PRICE_IDR}</span>
+          <span class="price">🌍 ${PREMIUM_PRICE_USD}</span>
+        </div>
+      </div>
+      <a class="premium-btn" href="${DISCORD_INVITE}" target="_blank" rel="noopener">
+        💎 Buy Premium
+      </a>
+    </div>
+  </section>`;
 
   const cards = userScripts.map(script => {
     const base = getBaseUrl(req);
@@ -914,14 +1082,14 @@ body { min-height: 100vh; font-family: Arial, Helvetica, sans-serif; color: whit
               radial-gradient(circle at 90% 100%, rgba(100,100,100,.15), transparent 35%), #0a0a0a; }
 .header { padding: 20px 30px; display: flex; align-items: center; justify-content: space-between;
   border-bottom: 1px solid rgba(255,200,0,.2);
-  background: linear-gradient(90deg, #8a6d00, #ffd700, #0a0a0a); }
+  background: linear-gradient(90deg, #8a6d00, #ffd700, #0a0a0a); flex-wrap: wrap; gap: 12px; }
 .brand { display: flex; align-items: center; gap: 12px; }
 .logo { width: 46px; height: 46px; display: flex; align-items: center; justify-content: center;
   border-radius: 13px; background: #ffd700; color: #0a0a0a; font-size: 25px;
   box-shadow: 0 0 25px rgba(255,200,0,.3); }
 .brand h1 { font-size: 23px; font-weight: 800; color: #0a0a0a; }
 .brand span { display: block; margin-top: 3px; color: rgba(0,0,0,.65); font-size: 11px; }
-.user-info { display: flex; align-items: center; gap: 10px; }
+.user-info { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .user-avatar { width: 36px; height: 36px; border-radius: 50%; border: 2px solid #ffd700; }
 .user-name { font-size: 13px; font-weight: 700; color: #0a0a0a; }
 .logout-btn { padding: 7px 14px; border: 1px solid rgba(0,0,0,.3); border-radius: 8px;
@@ -936,6 +1104,44 @@ body { min-height: 100vh; font-family: Arial, Helvetica, sans-serif; color: whit
   border: 1px solid rgba(255,200,0,.2); text-align: center; }
 .stat-card .value { font-size: 28px; font-weight: 850; color: #ffd700; }
 .stat-card .label { font-size: 12px; color: rgba(255,255,255,.5); margin-top: 5px; }
+
+/* Premium Banner */
+.premium-banner { margin-bottom: 25px; padding: 24px; border-radius: 20px;
+  background: linear-gradient(135deg, rgba(255,200,0,.15), rgba(138,109,0,.08));
+  border: 1px solid rgba(255,200,0,.4); position: relative; overflow: hidden; }
+.premium-banner::before {
+  content: ""; position: absolute; top: -50%; right: -10%;
+  width: 300px; height: 300px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,200,0,.25), transparent 70%);
+  pointer-events: none;
+}
+.premium-content { display: flex; align-items: center; gap: 18px; position: relative; z-index: 1; flex-wrap: wrap; }
+.premium-icon { width: 60px; height: 60px; border-radius: 16px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; font-size: 32px;
+  background: linear-gradient(135deg, #ffd700, #ffed4a);
+  box-shadow: 0 0 30px rgba(255,200,0,.5); }
+.premium-text { flex: 1; min-width: 220px; }
+.premium-text h3 { color: #fff; font-size: 19px; margin-bottom: 6px; font-weight: 800; }
+.premium-text h3 span { color: #ffd700; }
+.premium-text p { color: rgba(255,255,255,.65); font-size: 13px; margin-bottom: 10px; line-height: 1.5; }
+.premium-prices { display: flex; gap: 10px; flex-wrap: wrap; }
+.price { padding: 5px 12px; border-radius: 20px; background: rgba(255,200,0,.15);
+  border: 1px solid rgba(255,200,0,.35); color: #ffd700; font-size: 12px; font-weight: 800; }
+.premium-btn { display: inline-flex; align-items: center; gap: 8px; padding: 14px 24px;
+  border-radius: 12px; background: linear-gradient(90deg, #ffd700, #ffed4a);
+  color: #0a0a0a; font-size: 14px; font-weight: 900; text-decoration: none;
+  transition: transform .2s, filter .2s; white-space: nowrap; }
+.premium-btn:hover { transform: translateY(-3px); filter: brightness(1.08); }
+
+/* Tier badge */
+.tier-badge { display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 20px; font-size: 11px; font-weight: 900;
+  letter-spacing: .5px; text-transform: uppercase; }
+.tier-badge.premium { background: linear-gradient(90deg, #ffd700, #ffed4a);
+  color: #0a0a0a; box-shadow: 0 0 20px rgba(255,200,0,.4); }
+.tier-badge.free { background: rgba(255,255,255,.08); color: rgba(255,255,255,.6);
+  border: 1px solid rgba(255,255,255,.15); }
+
 .hero { padding: 28px; border-radius: 20px;
   background: linear-gradient(135deg, rgba(255,200,0,.10), rgba(100,100,100,.05));
   border: 1px solid rgba(255,200,0,.2); }
@@ -1029,6 +1235,9 @@ textarea { grid-column: 1 / -1; min-height: 180px; resize: vertical; font-family
   .form-grid { grid-template-columns: 1fr; }
   textarea, .upload-button { grid-column: auto; }
   .modal { padding: 20px; }
+  .premium-content { flex-direction: column; align-items: stretch; text-align: center; }
+  .premium-icon { margin: 0 auto; }
+  .premium-btn { width: 100%; justify-content: center; }
 }
 </style>
 </head>
@@ -1039,6 +1248,7 @@ textarea { grid-column: 1 / -1; min-height: 180px; resize: vertical; font-family
     <div><h1>Kingmor</h1><span>Lua Protection System</span></div>
   </div>
   <div class="user-info">
+    ${premiumBadge}
     <img class="user-avatar" src="${escapeHtml(user.avatar)}" alt="avatar">
     <span class="user-name">${escapeHtml(user.username)}</span>
     <a class="invite-btn" href="https://discord.com/oauth2/authorize?client_id=1545625902585487370&permissions=2952873984&integration_type=0&scope=bot" target="_blank" rel="noopener">Invite Bot</a>
@@ -1051,6 +1261,9 @@ textarea { grid-column: 1 / -1; min-height: 180px; resize: vertical; font-family
     <div class="stat-card"><div class="value">${userScripts.filter(s => s.enabled).length}</div><div class="label">Enabled Scripts</div></div>
     <div class="stat-card"><div class="value">${totalKeys}</div><div class="label">Total Keys</div></div>
   </div>
+
+  ${premiumBanner}
+
   <section class="hero">
     <h2>👑 Protect Your Scripts</h2>
     <p>Upload a Lua/TXT file or paste your source manually.</p>
@@ -1251,4 +1464,6 @@ app.get("/health", (req, res) => {
 app.listen(PORT, () => {
   console.log(`Kingmor running on port ${PORT}`);
   console.log(`API_SECRET loaded: ${API_SECRET ? "yes (" + API_SECRET.length + " chars)" : "NO"}`);
+  console.log(`Premium price: ${PREMIUM_PRICE_IDR} / ${PREMIUM_PRICE_USD}`);
+  console.log(`Discord invite: ${DISCORD_INVITE}`);
 });
