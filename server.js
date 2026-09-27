@@ -1,4 +1,4 @@
-mconst express = require("express");
+const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
@@ -157,6 +157,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 16px;
 }
 .card {
   width: 100%;
@@ -194,6 +195,15 @@ p { color: rgba(255,255,255,.55); font-size: 13px; margin-bottom: 30px; }
 }
 .invite-link:hover { background: rgba(255,200,0,.2); border-color: rgba(255,200,0,.6); color: #ffd700; }
 .invite-link svg { width: 16px; height: 16px; fill: currentColor; }
+.server-link {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  margin-top: 12px; width: 100%; padding: 12px 20px;
+  border: 1px solid rgba(88,101,242,.4); border-radius: 12px;
+  background: rgba(88,101,242,.15); color: rgba(255,255,255,.8);
+  font-size: 13px; font-weight: 700; text-decoration: none;
+  transition: background .2s, border-color .2s;
+}
+.server-link:hover { background: rgba(88,101,242,.25); border-color: rgba(88,101,242,.7); color: white; }
 </style>
 </head>
 <body>
@@ -204,6 +214,9 @@ p { color: rgba(255,255,255,.55); font-size: 13px; margin-bottom: 30px; }
   <a class="discord-btn" href="/auth/discord">
     <svg viewBox="0 0 24 24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057c.002.022.015.043.032.056a19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
     Login with Discord
+  </a>
+  <a class="server-link" href="${DISCORD_INVITE}" target="_blank" rel="noopener">
+    💬 Join our Discord Server
   </a>
   <a class="invite-link" href="https://discord.com/oauth2/authorize?client_id=1545625902585487370&permissions=2952873984&integration_type=0&scope=bot" target="_blank" rel="noopener">
     <svg viewBox="0 0 24 24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057c.002.022.015.043.032.056a19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
@@ -436,7 +449,6 @@ app.get("/api/premium/status", requireInternalSecret, (req, res) => {
   });
 });
 
-// Admin only: set/remove premium
 app.post("/api/premium/set", requireInternalSecret, (req, res) => {
   const { userId, expiry, remove } = req.body;
   if (!userId) return res.status(400).json({ error: "userId required" });
@@ -455,7 +467,6 @@ app.post("/api/premium/set", requireInternalSecret, (req, res) => {
   res.json({ success: true, premium: true, expiry });
 });
 
-// Public: pricing info (untuk dashboard)
 app.get("/api/premium/info", (req, res) => {
   res.json({
     priceIDR: PREMIUM_PRICE_IDR,
@@ -466,7 +477,6 @@ app.get("/api/premium/info", (req, res) => {
 
 // ==================== HWID COOLDOWN API ====================
 
-// Get cooldown config for a script
 app.get("/api/cooldown/:scriptId", requireInternalSecret, (req, res) => {
   const cooldowns = readCooldowns();
   const entry = cooldowns[req.params.scriptId] || {};
@@ -476,7 +486,6 @@ app.get("/api/cooldown/:scriptId", requireInternalSecret, (req, res) => {
   });
 });
 
-// Premium only: set cooldown
 app.post("/api/cooldown/set", requireInternalSecret, (req, res) => {
   const { scriptId, userId, cooldownMs } = req.body;
   if (!scriptId || !userId) return res.status(400).json({ error: "scriptId and userId required" });
@@ -495,7 +504,6 @@ app.post("/api/cooldown/set", requireInternalSecret, (req, res) => {
   res.json({ success: true, cooldownMs });
 });
 
-// Reset HWID dengan cooldown check (untuk button self-service)
 app.post("/api/hwid/reset-self", requireInternalSecret, (req, res) => {
   const { userId, scriptId } = req.body;
   if (!userId || !scriptId) return res.status(400).json({ error: "userId and scriptId required" });
@@ -954,7 +962,6 @@ app.get("/api/admin/scripts", isAdmin, (req, res) => {
   }));
 });
 
-// Admin: manage premium
 app.get("/api/admin/premium", isAdmin, (req, res) => {
   res.json(readPremium());
 });
@@ -1015,26 +1022,8 @@ app.get("/", requireAuth, (req, res) => {
   const premiumData = readPremium()[String(userId)] || null;
 
   const premiumBadge = premiumStatus
-    ? `<div class="tier-badge premium">👑 PREMIUM${premiumData?.expiry ? ` • Expires ${new Date(premiumData.expiry).toLocaleDateString()}` : ""}</div>`
+    ? `<div class="tier-badge premium">👑 PREMIUM${premiumData?.expiry ? ` • ${new Date(premiumData.expiry).toLocaleDateString()}` : " • LIFETIME"}</div>`
     : `<div class="tier-badge free">🆓 FREE</div>`;
-
-  const premiumBanner = premiumStatus ? "" : `
-  <section class="premium-banner">
-    <div class="premium-content">
-      <div class="premium-icon">👑</div>
-      <div class="premium-text">
-        <h3>Upgrade to <span>Kingmor Premium</span></h3>
-        <p>Unlock advanced features: custom HWID cooldown, /blacklistrole, unlimited whitelist duration, and more.</p>
-        <div class="premium-prices">
-          <span class="price">🇮🇩 ${PREMIUM_PRICE_IDR}</span>
-          <span class="price">🌍 ${PREMIUM_PRICE_USD}</span>
-        </div>
-      </div>
-      <a class="premium-btn" href="${DISCORD_INVITE}" target="_blank" rel="noopener">
-        💎 Buy Premium
-      </a>
-    </div>
-  </section>`;
 
   const cards = userScripts.map(script => {
     const base = getBaseUrl(req);
@@ -1074,85 +1063,138 @@ app.get("/", requireAuth, (req, res) => {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Kingmor</title>
+<title>Kingmor — Lua Protection System</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { min-height: 100vh; font-family: Arial, Helvetica, sans-serif; color: white;
+body { min-height: 100vh; font-family: 'Segoe UI', Arial, Helvetica, sans-serif; color: white;
   background: radial-gradient(circle at 10% 0%, rgba(255,200,0,.20), transparent 30%),
               radial-gradient(circle at 90% 100%, rgba(100,100,100,.15), transparent 35%), #0a0a0a; }
-.header { padding: 20px 30px; display: flex; align-items: center; justify-content: space-between;
+
+/* ========== HEADER ========== */
+.header { padding: 16px 24px; display: flex; align-items: center; justify-content: space-between;
   border-bottom: 1px solid rgba(255,200,0,.2);
   background: linear-gradient(90deg, #8a6d00, #ffd700, #0a0a0a); flex-wrap: wrap; gap: 12px; }
 .brand { display: flex; align-items: center; gap: 12px; }
 .logo { width: 46px; height: 46px; display: flex; align-items: center; justify-content: center;
   border-radius: 13px; background: #ffd700; color: #0a0a0a; font-size: 25px;
   box-shadow: 0 0 25px rgba(255,200,0,.3); }
-.brand h1 { font-size: 23px; font-weight: 800; color: #0a0a0a; }
-.brand span { display: block; margin-top: 3px; color: rgba(0,0,0,.65); font-size: 11px; }
+.brand h1 { font-size: 22px; font-weight: 800; color: #0a0a0a; }
+.brand span { display: block; margin-top: 3px; color: rgba(0,0,0,.7); font-size: 11px; font-weight: 600; }
 .user-info { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .user-avatar { width: 36px; height: 36px; border-radius: 50%; border: 2px solid #ffd700; }
 .user-name { font-size: 13px; font-weight: 700; color: #0a0a0a; }
-.logout-btn { padding: 7px 14px; border: 1px solid rgba(0,0,0,.3); border-radius: 8px;
-  background: transparent; color: rgba(0,0,0,.7); font-size: 12px; cursor: pointer; text-decoration: none; }
-.invite-btn { display: inline-flex; align-items: center; gap: 7px; padding: 7px 14px;
+.logout-btn { padding: 7px 14px; border: 1px solid rgba(0,0,0,.4); border-radius: 8px;
+  background: transparent; color: rgba(0,0,0,.8); font-size: 12px; cursor: pointer; text-decoration: none; font-weight: 700; }
+.invite-btn { display: inline-flex; align-items: center; gap: 7px; padding: 8px 14px;
   border: none; border-radius: 8px; background: #5865F2; color: white;
   font-size: 12px; font-weight: 700; cursor: pointer; text-decoration: none; }
-.container { width: min(1100px, calc(100% - 30px)); margin: 35px auto; }
-.stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 25px; }
-.stat-card { padding: 20px; border-radius: 15px;
+
+/* ========== CONTAINER ========== */
+.container { width: min(1100px, calc(100% - 24px)); margin: 28px auto; }
+
+/* ========== STATS ========== */
+.stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 22px; }
+.stat-card { padding: 18px 14px; border-radius: 15px;
   background: linear-gradient(145deg, rgba(30,30,30,.95), rgba(15,15,15,.98));
   border: 1px solid rgba(255,200,0,.2); text-align: center; }
-.stat-card .value { font-size: 28px; font-weight: 850; color: #ffd700; }
-.stat-card .label { font-size: 12px; color: rgba(255,255,255,.5); margin-top: 5px; }
+.stat-card .value { font-size: 26px; font-weight: 850; color: #ffd700; }
+.stat-card .label { font-size: 11px; color: rgba(255,255,255,.5); margin-top: 5px; letter-spacing: .5px; text-transform: uppercase; }
 
-/* Premium Banner */
-.premium-banner { margin-bottom: 25px; padding: 24px; border-radius: 20px;
-  background: linear-gradient(135deg, rgba(255,200,0,.15), rgba(138,109,0,.08));
-  border: 1px solid rgba(255,200,0,.4); position: relative; overflow: hidden; }
-.premium-banner::before {
-  content: ""; position: absolute; top: -50%; right: -10%;
+/* ========== SECTION TITLE ========== */
+.section-head { display: flex; align-items: center; gap: 10px; margin: 26px 0 14px; }
+.section-head h2 { font-size: 19px; color: #ffd700; font-weight: 800; }
+.section-head .line { flex: 1; height: 1px; background: linear-gradient(90deg, rgba(255,200,0,.5), transparent); }
+
+/* ========== PREMIUM SHOWCASE ========== */
+.showcase { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
+@media (max-width: 720px) { .showcase { grid-template-columns: 1fr; } }
+
+.tier-card { padding: 22px; border-radius: 18px; position: relative; overflow: hidden;
+  background: linear-gradient(145deg, rgba(30,30,30,.95), rgba(15,15,15,.98));
+  border: 1px solid rgba(255,255,255,.1); transition: transform .25s, border-color .25s; }
+.tier-card:hover { transform: translateY(-3px); }
+.tier-card.free { border-color: rgba(120,120,120,.35); }
+.tier-card.premium { border-color: rgba(255,200,0,.5);
+  background: linear-gradient(145deg, rgba(50,40,0,.85), rgba(20,15,0,.98));
+  box-shadow: 0 0 40px rgba(255,200,0,.15); }
+.tier-card.premium::before {
+  content: ""; position: absolute; top: -40px; right: -40px;
+  width: 180px; height: 180px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,200,0,.25), transparent 70%); pointer-events: none; }
+
+.tier-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; position: relative; z-index: 1; }
+.tier-title { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 900; }
+.tier-title.free-title { color: #b8b8b8; }
+.tier-title.premium-title { color: #ffd700; }
+.tier-icon { width: 42px; height: 42px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; }
+.tier-icon.free-icon { background: rgba(120,120,120,.25); border: 1px solid rgba(160,160,160,.3); }
+.tier-icon.premium-icon { background: linear-gradient(135deg, #ffd700, #ffed4a);
+  box-shadow: 0 0 25px rgba(255,200,0,.45); }
+
+.tier-price { font-size: 13px; font-weight: 800; padding: 5px 12px; border-radius: 20px; letter-spacing: .3px; }
+.tier-price.free-price { background: rgba(120,120,120,.2); color: #b8b8b8; border: 1px solid rgba(160,160,160,.3); }
+.tier-price.premium-price { background: linear-gradient(90deg, #ffd700, #ffed4a); color: #0a0a0a; }
+
+.tier-features { list-style: none; position: relative; z-index: 1; }
+.tier-features li { padding: 7px 0; font-size: 13px; line-height: 1.45; display: flex; gap: 8px; align-items: flex-start;
+  border-bottom: 1px dashed rgba(255,255,255,.06); }
+.tier-features li:last-child { border-bottom: none; }
+.tier-features li .ok { color: #54ff88; font-weight: 900; flex-shrink: 0; }
+.tier-features li .no { color: #ff4d4d; font-weight: 900; flex-shrink: 0; }
+.tier-features li.free-text { color: rgba(255,255,255,.7); }
+.tier-features li.premium-text { color: rgba(255,255,255,.9); }
+.tier-features li.premium-text strong { color: #ffd700; }
+.tier-features li code { background: rgba(255,200,0,.12); border: 1px solid rgba(255,200,0,.3);
+  padding: 1px 6px; border-radius: 5px; color: #ffd700; font-size: 11px; font-family: 'Courier New', monospace; }
+
+/* ========== HOW TO BUY ========== */
+.howto { padding: 22px; border-radius: 18px; margin-bottom: 22px;
+  background: linear-gradient(135deg, rgba(255,200,0,.10), rgba(100,100,100,.05));
+  border: 1px solid rgba(255,200,0,.3); position: relative; overflow: hidden; }
+.howto::before { content: ""; position: absolute; top: -50%; right: -10%;
   width: 300px; height: 300px; border-radius: 50%;
-  background: radial-gradient(circle, rgba(255,200,0,.25), transparent 70%);
-  pointer-events: none;
-}
-.premium-content { display: flex; align-items: center; gap: 18px; position: relative; z-index: 1; flex-wrap: wrap; }
-.premium-icon { width: 60px; height: 60px; border-radius: 16px; flex-shrink: 0;
-  display: flex; align-items: center; justify-content: center; font-size: 32px;
-  background: linear-gradient(135deg, #ffd700, #ffed4a);
-  box-shadow: 0 0 30px rgba(255,200,0,.5); }
-.premium-text { flex: 1; min-width: 220px; }
-.premium-text h3 { color: #fff; font-size: 19px; margin-bottom: 6px; font-weight: 800; }
-.premium-text h3 span { color: #ffd700; }
-.premium-text p { color: rgba(255,255,255,.65); font-size: 13px; margin-bottom: 10px; line-height: 1.5; }
-.premium-prices { display: flex; gap: 10px; flex-wrap: wrap; }
-.price { padding: 5px 12px; border-radius: 20px; background: rgba(255,200,0,.15);
-  border: 1px solid rgba(255,200,0,.35); color: #ffd700; font-size: 12px; font-weight: 800; }
-.premium-btn { display: inline-flex; align-items: center; gap: 8px; padding: 14px 24px;
-  border-radius: 12px; background: linear-gradient(90deg, #ffd700, #ffed4a);
-  color: #0a0a0a; font-size: 14px; font-weight: 900; text-decoration: none;
-  transition: transform .2s, filter .2s; white-space: nowrap; }
-.premium-btn:hover { transform: translateY(-3px); filter: brightness(1.08); }
+  background: radial-gradient(circle, rgba(255,200,0,.18), transparent 70%); pointer-events: none; }
+.howto-inner { position: relative; z-index: 1; }
+.howto h3 { color: #ffd700; font-size: 18px; margin-bottom: 6px; font-weight: 900; }
+.howto .sub { color: rgba(255,255,255,.6); font-size: 12px; margin-bottom: 16px; }
+.rules-list { list-style: none; counter-reset: step; margin-bottom: 18px; }
+.rules-list li { counter-increment: step; padding: 10px 0 10px 42px; position: relative;
+  font-size: 13px; line-height: 1.55; color: rgba(255,255,255,.85);
+  border-bottom: 1px dashed rgba(255,255,255,.06); }
+.rules-list li:last-child { border-bottom: none; }
+.rules-list li::before {
+  content: counter(step); position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(135deg, #ffd700, #ffed4a); color: #0a0a0a;
+  font-weight: 900; font-size: 13px; box-shadow: 0 0 15px rgba(255,200,0,.4); }
+.rules-list li strong { color: #ffd700; }
+.rules-list li code { background: rgba(255,200,0,.12); border: 1px solid rgba(255,200,0,.3);
+  padding: 2px 7px; border-radius: 5px; color: #ffd700; font-size: 12px; font-family: 'Courier New', monospace; }
+.rules-list li em { color: rgba(255,255,255,.6); font-style: normal; font-size: 12px; }
 
-/* Tier badge */
-.tier-badge { display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 14px; border-radius: 20px; font-size: 11px; font-weight: 900;
-  letter-spacing: .5px; text-transform: uppercase; }
-.tier-badge.premium { background: linear-gradient(90deg, #ffd700, #ffed4a);
-  color: #0a0a0a; box-shadow: 0 0 20px rgba(255,200,0,.4); }
-.tier-badge.free { background: rgba(255,255,255,.08); color: rgba(255,255,255,.6);
-  border: 1px solid rgba(255,255,255,.15); }
+.join-buttons { display: flex; gap: 10px; flex-wrap: wrap; }
+.join-btn { display: inline-flex; align-items: center; gap: 8px; padding: 13px 22px;
+  border-radius: 12px; text-decoration: none; font-size: 14px; font-weight: 900;
+  transition: transform .2s, filter .2s; }
+.join-btn.discord { background: #5865F2; color: white; }
+.join-btn.discord:hover { transform: translateY(-2px); filter: brightness(1.1); }
+.join-btn.buy { background: linear-gradient(90deg, #ffd700, #ffed4a); color: #0a0a0a;
+  box-shadow: 0 0 25px rgba(255,200,0,.35); }
+.join-btn.buy:hover { transform: translateY(-2px); filter: brightness(1.08); }
 
-.hero { padding: 28px; border-radius: 20px;
+/* ========== HERO UPLOAD ========== */
+.hero { padding: 26px 24px; border-radius: 20px;
   background: linear-gradient(135deg, rgba(255,200,0,.10), rgba(100,100,100,.05));
   border: 1px solid rgba(255,200,0,.2); }
-.hero h2 { font-size: 27px; margin-bottom: 8px; color: #ffd700; }
-.hero p { color: #aaa; font-size: 14px; }
-.form-grid { margin-top: 22px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.hero h2 { font-size: 24px; margin-bottom: 6px; color: #ffd700; font-weight: 900; }
+.hero p { color: #aaa; font-size: 13px; }
+.form-grid { margin-top: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 input, textarea { width: 100%; outline: none; border: 1px solid rgba(255,200,0,.2);
-  border-radius: 11px; background: #1a1a1a; color: white; padding: 13px; font-family: inherit; }
+  border-radius: 11px; background: #1a1a1a; color: white; padding: 13px; font-family: inherit; font-size: 14px; }
 input:focus, textarea:focus { border-color: #ffd700; box-shadow: 0 0 0 3px rgba(255,200,0,.1); }
-textarea { grid-column: 1 / -1; min-height: 180px; resize: vertical; font-family: 'Courier New', monospace; font-size: 13px; }
-.file-row { display: flex; align-items: center; gap: 10px; grid-column: 1 / -1; }
+textarea { grid-column: 1 / -1; min-height: 160px; resize: vertical;
+  font-family: 'Courier New', monospace; font-size: 13px; }
+.file-row { display: flex; align-items: center; gap: 10px; grid-column: 1 / -1; flex-wrap: wrap; }
 .file-label { display: inline-flex; align-items: center; justify-content: center;
   padding: 12px 18px; border-radius: 11px; background: #ffd700; color: #0a0a0a;
   font-size: 13px; font-weight: 800; cursor: pointer; transition: transform .2s, filter .2s; }
@@ -1160,67 +1202,75 @@ textarea { grid-column: 1 / -1; min-height: 180px; resize: vertical; font-family
 .file-name { color: #888; font-size: 12px; }
 #fileInput { display: none; }
 .upload-button { grid-column: 1 / -1; width: 100%; padding: 14px; border: none; border-radius: 11px;
-  background: linear-gradient(90deg, #ffd700, #ffed4a); color: #0a0a0a; font-weight: 800; cursor: pointer; transition: transform .2s, filter .2s; }
+  background: linear-gradient(90deg, #ffd700, #ffed4a); color: #0a0a0a;
+  font-weight: 900; cursor: pointer; font-size: 14px;
+  transition: transform .2s, filter .2s; }
 .upload-button:hover { transform: translateY(-2px); filter: brightness(1.05); }
-.section-title { margin: 25px 0 12px; color: #aaa; font-size: 15px; }
-.scripts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px,1fr)); gap: 15px; }
+
+/* ========== SCRIPTS LIST ========== */
+.scripts { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px,1fr)); gap: 14px; }
 .script-card { position: relative; display: flex; align-items: center; justify-content: space-between;
-  padding: 18px; border-radius: 17px; background: linear-gradient(145deg, #1a1a1a, #0d0d0d);
+  padding: 16px; border-radius: 16px; background: linear-gradient(145deg, #1a1a1a, #0d0d0d);
   border: 1px solid rgba(255,200,0,.15); transition: border-color .2s; }
 .script-card:hover { border-color: rgba(255,200,0,.4); }
-.script-info { display: flex; align-items: center; gap: 13px; }
-.script-icon { width: 45px; height: 45px; display: flex; align-items: center; justify-content: center;
-  border-radius: 12px; background: linear-gradient(135deg, #ffd700, #ffed4a); font-size: 22px; }
-.script-name { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.script-info { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.script-icon { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center;
+  border-radius: 12px; background: linear-gradient(135deg, #ffd700, #ffed4a); font-size: 21px; flex-shrink: 0; }
+.script-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 15px; font-weight: 700; }
-.script-status { margin-top: 4px; font-size: 11px; }
+.script-status { margin-top: 3px; font-size: 11px; font-weight: 700; }
 .script-status.on { color: #54ff88; }
 .script-status.off { color: #ff4d4d; }
 .script-updated { margin-top: 2px; font-size: 10px; color: rgba(255,255,255,.35); }
-.script-menu { position: relative; }
+.script-menu { position: relative; flex-shrink: 0; }
 .dots { width: 38px; height: 38px; border: none; border-radius: 10px; background: #1c1c1c;
-  color: #ffd700; font-size: 23px; cursor: pointer; transition: background .2s; }
+  color: #ffd700; font-size: 22px; cursor: pointer; transition: background .2s; }
 .dots:hover { background: #2a2a2a; }
 .menu { display: none; position: absolute; z-index: 100; right: 0; top: 45px; width: 190px;
   padding: 6px; border-radius: 12px; background: #1a1a1a;
   border: 1px solid rgba(255,200,0,.2); box-shadow: 0 15px 40px rgba(0,0,0,.6); }
 .menu.show { display: block; }
 .menu button { width: 100%; padding: 10px; border: none; border-radius: 8px;
-  background: transparent; color: #eee; text-align: left; cursor: pointer; transition: background .15s, color .15s; }
+  background: transparent; color: #eee; text-align: left; cursor: pointer; font-size: 13px;
+  transition: background .15s, color .15s; }
 .menu button:hover { background: #2a2a2a; color: #ffd700; }
 .menu .delete { color: #ff4d4d; }
-.empty { padding: 50px; text-align: center; color: #666;
-  border: 1px dashed rgba(255,200,0,.2); border-radius: 18px; }
+.empty { padding: 50px 20px; text-align: center; color: #666;
+  border: 1px dashed rgba(255,200,0,.2); border-radius: 18px; font-size: 14px; }
 
-/* ── Edit Modal ── */
-.modal-overlay {
-  display: none; position: fixed; inset: 0; z-index: 999;
+/* ========== TIER BADGE ========== */
+.tier-badge { display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 20px; font-size: 11px; font-weight: 900;
+  letter-spacing: .5px; text-transform: uppercase; }
+.tier-badge.premium { background: linear-gradient(90deg, #ffd700, #ffed4a);
+  color: #0a0a0a; box-shadow: 0 0 20px rgba(255,200,0,.4); }
+.tier-badge.free { background: rgba(255,255,255,.08); color: rgba(255,255,255,.65);
+  border: 1px solid rgba(255,255,255,.15); }
+
+/* ========== MODAL ========== */
+.modal-overlay { display: none; position: fixed; inset: 0; z-index: 999;
   background: rgba(0,0,0,.75); backdrop-filter: blur(6px);
-  align-items: center; justify-content: center; padding: 20px;
-}
+  align-items: center; justify-content: center; padding: 16px; }
 .modal-overlay.show { display: flex; }
-.modal {
-  width: 100%; max-width: 760px; max-height: 90vh; overflow-y: auto;
-  padding: 28px; border-radius: 20px;
-  border: 1px solid rgba(255,200,0,.3);
+.modal { width: 100%; max-width: 760px; max-height: 90vh; overflow-y: auto;
+  padding: 26px; border-radius: 20px; border: 1px solid rgba(255,200,0,.3);
   background: linear-gradient(145deg, #1a1a1a, #0d0d0d);
-  box-shadow: 0 25px 80px rgba(0,0,0,.7);
-}
-.modal h3 { color: #ffd700; font-size: 20px; margin-bottom: 18px; display: flex; align-items: center; gap: 8px; }
+  box-shadow: 0 25px 80px rgba(0,0,0,.7); }
+.modal h3 { color: #ffd700; font-size: 19px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
 .modal label { display: block; font-size: 11px; font-weight: 800; letter-spacing: 1px;
   color: rgba(255,255,255,.45); margin-bottom: 6px; text-transform: uppercase; }
 .modal input, .modal textarea { width: 100%; }
-.modal textarea { min-height: 340px; }
+.modal textarea { min-height: 320px; }
 .modal-actions { display: flex; gap: 10px; margin-top: 16px; }
 .btn-cancel { flex: 1; padding: 13px; border: 1px solid rgba(255,255,255,.15); border-radius: 11px;
   background: transparent; color: #ccc; font-weight: 700; cursor: pointer; transition: background .2s; }
 .btn-cancel:hover { background: rgba(255,255,255,.05); }
 .btn-save { flex: 2; padding: 13px; border: none; border-radius: 11px;
   background: linear-gradient(90deg, #ffd700, #ffed4a); color: #0a0a0a;
-  font-weight: 800; cursor: pointer; transition: transform .2s, filter .2s; }
+  font-weight: 900; cursor: pointer; transition: transform .2s, filter .2s; }
 .btn-save:hover { transform: translateY(-2px); filter: brightness(1.05); }
 .btn-save:disabled { opacity: .5; cursor: wait; transform: none; }
-.modal-file-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.modal-file-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
 .modal-file-label { display: inline-flex; align-items: center; gap: 6px;
   padding: 9px 14px; border-radius: 9px; background: #ffd700; color: #0a0a0a;
   font-size: 12px; font-weight: 800; cursor: pointer; }
@@ -1228,16 +1278,19 @@ textarea { grid-column: 1 / -1; min-height: 180px; resize: vertical; font-family
 #editFileInput { display: none; }
 #editFileName { color: #888; font-size: 11px; }
 
+/* ========== RESPONSIVE ========== */
 @media(max-width:700px) {
-  .header { padding: 18px; }
+  .header { padding: 14px; }
   .user-name { display: none; }
-  .container { width: calc(100% - 20px); margin-top: 20px; }
+  .container { width: calc(100% - 16px); margin-top: 16px; }
   .form-grid { grid-template-columns: 1fr; }
   textarea, .upload-button { grid-column: auto; }
-  .modal { padding: 20px; }
-  .premium-content { flex-direction: column; align-items: stretch; text-align: center; }
-  .premium-icon { margin: 0 auto; }
-  .premium-btn { width: 100%; justify-content: center; }
+  .modal { padding: 18px; }
+  .brand h1 { font-size: 19px; }
+  .hero h2 { font-size: 20px; }
+  .tier-card { padding: 18px; }
+  .join-btn { flex: 1; justify-content: center; }
+  .rules-list li { font-size: 12px; }
 }
 </style>
 </head>
@@ -1255,17 +1308,112 @@ textarea { grid-column: 1 / -1; min-height: 180px; resize: vertical; font-family
     <a class="logout-btn" href="/logout">Logout</a>
   </div>
 </header>
+
 <main class="container">
+
+  <!-- STATS -->
   <div class="stats-row">
     <div class="stat-card"><div class="value">${userScripts.length}</div><div class="label">Total Scripts</div></div>
-    <div class="stat-card"><div class="value">${userScripts.filter(s => s.enabled).length}</div><div class="label">Enabled Scripts</div></div>
+    <div class="stat-card"><div class="value">${userScripts.filter(s => s.enabled).length}</div><div class="label">Enabled</div></div>
     <div class="stat-card"><div class="value">${totalKeys}</div><div class="label">Total Keys</div></div>
   </div>
 
-  ${premiumBanner}
+  <!-- TIER COMPARISON -->
+  <div class="section-head">
+    <h2>💎 Plans & Features</h2>
+    <div class="line"></div>
+  </div>
+
+  <div class="showcase">
+    <!-- FREE -->
+    <div class="tier-card free">
+      <div class="tier-header">
+        <div class="tier-title free-title">
+          <div class="tier-icon free-icon">🆓</div>
+          <span>Free</span>
+        </div>
+        <div class="tier-price free-price">$0</div>
+      </div>
+      <ul class="tier-features">
+        <li class="free-text"><span class="ok">✓</span> Upload unlimited scripts</li>
+        <li class="free-text"><span class="ok">✓</span> Key system &amp; HWID lock</li>
+        <li class="free-text"><span class="ok">✓</span> <strong>/setuppanel</strong> for Discord</li>
+        <li class="free-text"><span class="ok">✓</span> <strong>/genkey</strong>, <strong>/whitelist</strong> (max 30 days)</li>
+        <li class="free-text"><span class="ok">✓</span> <strong>/blacklist</strong> user &amp; <strong>/unblacklist</strong> user</li>
+        <li class="free-text"><span class="ok">✓</span> <strong>/freemode</strong>, <strong>/setwebhook</strong></li>
+        <li class="free-text"><span class="ok">✓</span> Self HWID reset (1 day cooldown)</li>
+        <li class="free-text"><span class="no">✗</span> <strong>/blacklistrole</strong> — Blacklist roles</li>
+        <li class="free-text"><span class="no">✗</span> <strong>/unblacklist role</strong> — Unblacklist roles</li>
+        <li class="free-text"><span class="no">✗</span> <strong>/cooldownhwid</strong> — Custom HWID cooldown</li>
+        <li class="free-text"><span class="no">✗</span> <strong>/resethwiduser</strong> — Reset HWID for others</li>
+        <li class="free-text"><span class="no">✗</span> Lifetime whitelist</li>
+      </ul>
+    </div>
+
+    <!-- PREMIUM -->
+    <div class="tier-card premium">
+      <div class="tier-header">
+        <div class="tier-title premium-title">
+          <div class="tier-icon premium-icon">👑</div>
+          <span>Premium</span>
+        </div>
+        <div class="tier-price premium-price">Rp 20.000 / $2</div>
+      </div>
+      <ul class="tier-features">
+        <li class="premium-text"><span class="ok">✓</span> <strong>Everything in Free</strong></li>
+        <li class="premium-text"><span class="ok">✓</span> <strong>/blacklistrole</strong> — Blacklist roles from your scripts</li>
+        <li class="premium-text"><span class="ok">✓</span> <strong>/unblacklist role</strong> — Unblacklist roles</li>
+        <li class="premium-text"><span class="ok">✓</span> <strong>/cooldownhwid</strong> — Set custom HWID cooldown (e.g. <code>30m</code>, <code>1h</code>, <code>3d</code>)</li>
+        <li class="premium-text"><span class="ok">✓</span> <strong>/resethwiduser</strong> — Reset HWID for any user</li>
+        <li class="premium-text"><span class="ok">✓</span> <strong>Lifetime whitelist</strong> — no 30-day limit</li>
+        <li class="premium-text"><span class="ok">✓</span> Priority support in Discord</li>
+        <li class="premium-text"><span class="ok">✓</span> Early access to new features</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- HOW TO BUY / RULES -->
+  <div class="section-head">
+    <h2>🎫 How to Buy Premium</h2>
+    <div class="line"></div>
+  </div>
+
+  <div class="howto">
+    <div class="howto-inner">
+      <h3>👑 Upgrade to Premium</h3>
+      <p class="sub">Follow the steps below to purchase Premium. All purchases are handled through our Discord server via a ticket.</p>
+
+      <ol class="rules-list">
+        <li>Join our official <strong>Discord server</strong> using the button below.</li>
+        <li>Go to the <code>#purchasing</code> channel and read the pinned instructions carefully.</li>
+        <li>Open a <strong>ticket</strong> by clicking the ticket button in the ticket channel.</li>
+        <li>In your ticket, tell the staff which plan you want:
+          <br>🇮🇩 Indonesia — <strong>Rp 20.000</strong>
+          <br>🌍 International — <strong>$2 USD</strong>
+        </li>
+        <li>Send the payment using the method provided by staff (QRIS, PayPal, etc.). <em>Staff will guide you.</em></li>
+        <li>Once payment is confirmed, your Premium will be activated <strong>instantly</strong> by our staff.</li>
+      </ol>
+
+      <div class="join-buttons">
+        <a class="join-btn discord" href="${DISCORD_INVITE}" target="_blank" rel="noopener">
+          💬 Join Discord Server
+        </a>
+        <a class="join-btn buy" href="${DISCORD_INVITE}" target="_blank" rel="noopener">
+          💎 Buy Premium Now
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- UPLOAD -->
+  <div class="section-head">
+    <h2>📤 Protect Your Scripts</h2>
+    <div class="line"></div>
+  </div>
 
   <section class="hero">
-    <h2>👑 Protect Your Scripts</h2>
+    <h2>👑 Upload Script</h2>
     <p>Upload a Lua/TXT file or paste your source manually.</p>
     <div class="form-grid">
       <input id="scriptName" placeholder="Script name...">
@@ -1278,13 +1426,20 @@ textarea { grid-column: 1 / -1; min-height: 180px; resize: vertical; font-family
       <button class="upload-button" onclick="uploadScript()">👑 Protect &amp; Upload</button>
     </div>
   </section>
-  <div class="section-title">Your Scripts</div>
+
+  <!-- SCRIPTS -->
+  <div class="section-head">
+    <h2>📜 Your Scripts</h2>
+    <div class="line"></div>
+  </div>
+
   <section class="scripts">
     ${cards || `<div class="empty">👑 No scripts yet.<br>Upload your first Lua script above.</div>`}
   </section>
+
 </main>
 
-<!-- Edit Modal -->
+<!-- EDIT MODAL -->
 <div class="modal-overlay" id="editModal">
   <div class="modal">
     <h3>✏️ Edit Script Source</h3>
@@ -1371,9 +1526,9 @@ async function copyLoaderCode(loaderCode) {
 }
 
 function openLoader(url) { window.open(url, "_blank"); }
-function openStats() { window.scrollTo(0, 0); }
+function openStats() { window.scrollTo({ top: 0, behavior: "smooth" }); }
 
-/* ── Edit Modal ── */
+/* EDIT MODAL */
 async function openEdit(scriptId) {
   editingScriptId = scriptId;
   const modal = document.getElementById("editModal");
