@@ -68,7 +68,7 @@ function writePremium(data) { fs.writeFileSync(PREMIUM_FILE, JSON.stringify(data
 
 // ==================== PREMIUM HELPERS ====================
 const PREMIUM_INFO = {
-  discord: "https://discord.gg/7Sqw6arUM",
+  discord: "https://discord.gg/QgubzPzzy",
   priceIDR: "Rp 20.000",
   priceUSD: "$2"
 };
@@ -98,6 +98,8 @@ function premiumRequiredReply(commandName, extraNote) {
     .setDescription(
       `The command \`/${commandName}\` is only available for **Kingmor Premium** users.\n\n` +
       `**Why upgrade?**\n` +
+      `• 🎛️ \`/setuppanel\` — up to **5 panels** (Free: 2 max)\n` +
+      `• 🎮 \`/freemode\` — enable free mode on your scripts\n` +
       `• 🚫 \`/blacklistrole\` — blacklist roles\n` +
       `• 🔓 \`/unblacklist role\` — unblacklist roles\n` +
       `• ⏱️ \`/cooldownhwid\` — custom HWID reset cooldown\n` +
@@ -234,6 +236,28 @@ function clearCache(ownerId) {
   else scriptCache.clear();
 }
 
+// ==================== PANEL LIMIT HELPER ====================
+async function checkPanelLimit(ownerId) {
+  try {
+    const res = await axios.get(`${CONFIG.apiBase}/api/panels/count`, {
+      headers: internalHeaders, params: { ownerId }, timeout: 8000
+    });
+    return res.data; // { count, max, premium, remaining, canCreate }
+  } catch (err) {
+    console.error(`❌ checkPanelLimit failed: ${describeAxiosError(err)}`);
+    // Fallback: hitung manual dari config lokal
+    const cfg = readConfig();
+    let count = 0;
+    for (const gid of Object.keys(cfg)) {
+      const g = cfg[gid];
+      if (g && String(g.panelOwnerId) === String(ownerId) && g.panelScriptId) count++;
+    }
+    const premium = isPremiumLocal(ownerId);
+    const max = premium ? 5 : 2;
+    return { count, max, premium, remaining: Math.max(0, max - count), canCreate: count < max };
+  }
+}
+
 // ==================== TEMP DATA ====================
 const panelTempData = new Map();
 const buyerRoleTempData = new Map();
@@ -242,7 +266,6 @@ const webhookTempData = new Map();
 const blacklistRoleTempData = new Map();
 const cooldownTempData = new Map();
 const resetHwidUserTempData = new Map();
-const premiumWhitelistTempData = new Map();
 
 // ==================== GUILDS LIST ====================
 async function updateGuildsList() {
@@ -265,7 +288,7 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBit
 const commands = [
   new SlashCommandBuilder()
     .setName("setuppanel")
-    .setDescription("Setup panel embed with script selection")
+    .setDescription("Setup panel embed with script selection (Free: 2 max, Premium: 5 max)")
     .addStringOption(o => o.setName("title").setDescription("Title").setRequired(true))
     .addStringOption(o => o.setName("description").setDescription("Description").setRequired(true)),
 
@@ -333,7 +356,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("freemode")
-    .setDescription("Enable or disable free mode for a script"),
+    .setDescription("[PREMIUM] Enable or disable free mode for a script"),
 
   new SlashCommandBuilder()
     .setName("resethwid")
@@ -845,12 +868,22 @@ client.on("interactionCreate", async interaction => {
           const { title, description } = tempData;
           panelTempData.delete(interaction.user.id);
 
+          // Recheck limit (safety)
+          const limitInfo = await checkPanelLimit(interaction.user.id);
+          if (!limitInfo.canCreate) {
+            return interaction.editReply({
+              content: `❌ **Panel limit reached!** (${limitInfo.count}/${limitInfo.max})`
+            }).catch(() => {});
+          }
+
           const myScripts = await getScriptsByOwner(interaction.user.id);
           const selectedScript = myScripts.find(s => s.id === scriptId);
           if (!selectedScript) return interaction.editReply({ content: "❌ Script not found or not yours!" }).catch(() => {});
 
           await sendPanelEmbed(interaction.channel, title, description, scriptId, selectedScript.name, interaction.user.id, interaction.guildId);
-          return interaction.editReply({ content: `✅ Panel created with script: **${selectedScript.name}**!` }).catch(() => {});
+          return interaction.editReply({
+            content: `✅ Panel created with script: **${selectedScript.name}**!\nPanel usage: **${limitInfo.count + 1}/${limitInfo.max}**`
+          }).catch(() => {});
         } catch {
           return interaction.editReply({ content: "❌ Failed to create panel." }).catch(() => {});
         }
@@ -1046,7 +1079,6 @@ client.on("interactionCreate", async interaction => {
 
       // ==================== PREMIUMWHITELIST (OWNER ONLY) ====================
       if (commandName === "premiumwhitelist") {
-        // HANYA owner ID yang bisa pakai
         if (interaction.user.id !== OWNER_ID) {
           return interaction.reply({
             content: "❌ This command is restricted to the bot owner only.",
@@ -1058,7 +1090,6 @@ client.on("interactionCreate", async interaction => {
         const sub = interaction.options.getSubcommand();
 
         try {
-          // ============ ADD ============
           if (sub === "add") {
             const targetUser = interaction.options.getUser("user");
             const durationInput = interaction.options.getString("duration").trim().toLowerCase();
@@ -1067,19 +1098,18 @@ client.on("interactionCreate", async interaction => {
             let durationLabel = "Lifetime";
 
             if (durationInput !== "lifetime" && durationInput !== "forever" && durationInput !== "0") {
-              const ms = parseDuration(durationInput);
-              if (!ms) {
-                return interaction.editReply({
-                  content: "❌ Invalid duration format. Use `7d`, `30d`, `1y`(not supported—use days), `12h`, or `lifetime`.\n\nSupported units: `m` (minutes), `h` (hours), `d` (days), `w` (weeks)."
-                }).catch(() => {});
-              }
-              // Cek juga "y" untuk year
               const yearMatch = durationInput.match(/^(\d+)\s*y$/);
               if (yearMatch) {
                 const years = parseInt(yearMatch[1]);
                 expiry = new Date(Date.now() + years * 365 * 86400000).toISOString();
                 durationLabel = `${years} year(s)`;
               } else {
+                const ms = parseDuration(durationInput);
+                if (!ms) {
+                  return interaction.editReply({
+                    content: "❌ Invalid duration format. Use `7d`, `30d`, `1y`, `12h`, or `lifetime`.\n\nSupported units: `m` (minutes), `h` (hours), `d` (days), `w` (weeks), `y` (years)."
+                  }).catch(() => {});
+                }
                 expiry = new Date(Date.now() + ms).toISOString();
                 durationLabel = formatDuration(ms);
               }
@@ -1095,7 +1125,6 @@ client.on("interactionCreate", async interaction => {
             };
             writePremium(premium);
 
-            // Sync ke server
             try {
               await axios.post(`${CONFIG.apiBase}/api/premium/set`, {
                 userId: targetUser.id,
@@ -1122,7 +1151,6 @@ client.on("interactionCreate", async interaction => {
             return interaction.editReply({ embeds: [embed] }).catch(() => {});
           }
 
-          // ============ REMOVE ============
           if (sub === "remove") {
             const targetUser = interaction.options.getUser("user");
             const premium = readPremium();
@@ -1142,7 +1170,7 @@ client.on("interactionCreate", async interaction => {
                 remove: true
               }, { headers: internalHeaders, timeout: 8000 });
             } catch (err) {
-              console.error(`⚠️ Failed to sync premium removal to server: ${describeAxiosError(err)}`);
+              console.error(`⚠️ Failed to sync premium removal: ${describeAxiosError(err)}`);
             }
 
             const embed = new EmbedBuilder()
@@ -1154,7 +1182,6 @@ client.on("interactionCreate", async interaction => {
             return interaction.editReply({ embeds: [embed] }).catch(() => {});
           }
 
-          // ============ LIST ============
           if (sub === "list") {
             const premium = readPremium();
             const entries = Object.entries(premium);
@@ -1193,7 +1220,6 @@ client.on("interactionCreate", async interaction => {
             return interaction.editReply({ content: list }).catch(() => {});
           }
 
-          // ============ CHECK ============
           if (sub === "check") {
             const targetUser = interaction.options.getUser("user");
             const premium = readPremium();
@@ -1239,6 +1265,8 @@ client.on("interactionCreate", async interaction => {
           .setDescription(
             `${statusText}\n\n` +
             `**Unlock Premium features:**\n` +
+            `• 🎛️ \`/setuppanel\` — up to **5 panels** (Free: 2 max)\n` +
+            `• 🎮 \`/freemode\` — Enable free mode on your scripts\n` +
             `• 🚫 \`/blacklistrole\` — Blacklist roles from using your scripts\n` +
             `• 🔓 \`/unblacklist role\` — Unblacklist roles\n` +
             `• ⏱️ \`/cooldownhwid\` — Set custom HWID reset cooldown (default is 1 day)\n` +
@@ -1359,6 +1387,24 @@ client.on("interactionCreate", async interaction => {
           return interaction.reply({ content: "❌ No permission.", ephemeral: true }).catch(() => {});
         }
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
+
+        // Cek panel limit
+        const limitInfo = await checkPanelLimit(interaction.user.id);
+        if (!limitInfo.canCreate) {
+          return interaction.editReply({
+            content:
+              `❌ **Panel limit reached!**\n\n` +
+              `You currently have **${limitInfo.count}/${limitInfo.max}** panels.\n` +
+              `Your tier: **${limitInfo.premium ? "👑 Premium" : "🆓 Free"}**\n\n` +
+              (limitInfo.premium
+                ? `Premium users can create up to **5 panels**. Delete one with \`/deletescript\` or remove an old panel.`
+                : `Free users can only create up to **2 panels**.\nUpgrade to Premium to increase the limit to **5 panels**.`),
+            components: limitInfo.premium ? [] : [new ActionRowBuilder().addComponents(
+              new ButtonBuilder().setLabel("💎 Buy Premium").setStyle(ButtonStyle.Link).setURL(PREMIUM_INFO.discord)
+            )]
+          }).catch(() => {});
+        }
+
         try {
           const title = interaction.options.getString("title");
           const description = interaction.options.getString("description");
@@ -1367,7 +1413,9 @@ client.on("interactionCreate", async interaction => {
 
           if (myScripts.length === 1) {
             await sendPanelEmbed(interaction.channel, title, description, myScripts[0].id, myScripts[0].name, interaction.user.id, interaction.guildId);
-            return interaction.editReply({ content: `✅ Panel created with script: **${myScripts[0].name}**!` }).catch(() => {});
+            return interaction.editReply({
+              content: `✅ Panel created with script: **${myScripts[0].name}**!\nPanel usage: **${limitInfo.count + 1}/${limitInfo.max}**`
+            }).catch(() => {});
           }
 
           panelTempData.set(interaction.user.id, { title, description });
@@ -1380,7 +1428,7 @@ client.on("interactionCreate", async interaction => {
             .setCustomId("setuppanel_select").setPlaceholder("Select a script for this panel...").addOptions(options);
 
           return interaction.editReply({
-            content: "Select which script you want to use for this panel:",
+            content: `Select which script you want to use for this panel:\n_Panel usage: **${limitInfo.count}/${limitInfo.max}**_`,
             components: [new ActionRowBuilder().addComponents(select)]
           }).catch(() => {});
         } catch {
@@ -1412,10 +1460,17 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
+      // ==================== FREEMODE (PREMIUM ONLY) ====================
       if (commandName === "freemode") {
         if (!hasPermission(interaction.member, interaction.guildId)) {
           return interaction.reply({ content: "❌ No permission.", ephemeral: true }).catch(() => {});
         }
+
+        const isPrem = await checkPremium(interaction.user.id);
+        if (!isPrem) {
+          return interaction.reply(premiumRequiredReply("freemode", "Free users cannot use `/freemode`. Upgrade to Premium to enable free mode on your scripts.")).catch(() => {});
+        }
+
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
         try {
           const options = [
