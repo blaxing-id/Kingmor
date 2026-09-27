@@ -3,6 +3,7 @@
  * Scope-safe Lua/Luau compiler + SwaveArmor-style buffer VM.
  * Output is native Luau: table/call/arithmetic go through the host, so Roblox APIs work.
  */
+// @ts-nocheck
 "use strict";
 
 const VERSION = "v2.1r-gen3";
@@ -11,7 +12,7 @@ const PRODUCT = "KingmorArmor";
 const LUA_KW = new Set([
   "and", "break", "do", "else", "elseif", "end", "false", "for", "function",
   "goto", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then",
-  "true", "until", "while", "continue", "type", "export",
+  "true", "until", "while", "continue",
 ]);
 
 const OP3 = ["//=", "..=", "..."];
@@ -290,19 +291,20 @@ class Parser {
     }
   }
   skipTypeStmt() {
-    while (!this.at("EOF")) {
-      if (this.at("KW", "end") || this.at("KW", "else") || this.at("KW", "elseif") ||
-          this.at("KW", "until") || this.at("KW", "return") || this.at("KW", "local") ||
-          this.at("KW", "function") || this.at("KW", "if") || this.at("KW", "for") ||
-          this.at("KW", "while") || this.at("KW", "repeat") || this.at("KW", "do") ||
-          this.at("KW", "break") || this.at("KW", "continue") || this.at("KW", "type") ||
-          this.at("KW", "export")) break;
-      if (this.at("IDENT") && this.lookaheadStatBoundary()) break;
+    if (this.peek().value === "export") this.i++;
+    if (this.peek().value === "type") this.i++;
+    if (this.at("IDENT")) this.i++;
+    if (this.at("OP", "<") || this.at("PUNCT", "<")) {
       this.i++;
+      let d = 1;
+      while (d && !this.at("EOF")) {
+        if (this.peek().value === "<") d++;
+        else if (this.peek().value === ">") d--;
+        this.i++;
+      }
     }
-  }
-  lookaheadStatBoundary() {
-    return true;
+    this.eat("PUNCT", "=");
+    this.skipTypeNode();
   }
 
   parseChunk() {
@@ -362,8 +364,10 @@ class Parser {
       this.expect("OP", "::");
       return { type: "label", name };
     }
-    if (this.at("KW", "type") || this.at("KW", "export")) {
-      this.i++;
+    if (
+      (this.at("IDENT", "export") && this.t[this.i + 1] && this.t[this.i + 1].value === "type") ||
+      (this.at("IDENT", "type") && this.t[this.i + 1] && this.t[this.i + 1].type === "IDENT")
+    ) {
       this.skipTypeStmt();
       return { type: "empty" };
     }
@@ -698,10 +702,10 @@ const BASE_OPS = [
   "BAND", "BOR", "BXOR", "SHL", "SHR",
   "UNM", "NOT", "LEN", "BNOT",
   "EQ", "NE", "LT", "LE", "GT", "GE",
-  "JMP", "TESTF", "TESTT", "ANDSKIP", "ORSKIP",
+  "JMP", "TESTF", "TESTT", "TESTNIL", "ANDSKIP", "ORSKIP",
   "CALL", "RETURN", "FORPREP", "FORLOOP", "TFOR",
   "CLOSURE", "VARARG", "POP", "DUP", "CLOSE",
-  "MOVE", "LOADBOOL",
+  "SWAP", "LOADBOOL",
 ];
 
 function insn(op, a = 0, b = 0, c = 0) {
@@ -790,12 +794,12 @@ class FuncState {
     return null;
   }
   searchUpval(name) {
-    const loc = this.findLocal(name);
+    if (!this.parent) return -1;
+    const loc = this.parent.findLocal(name);
     if (loc) {
       loc.captured = true;
       return this.addUp(name, 1, loc.reg);
     }
-    if (!this.parent) return -1;
     const pu = this.parent.searchUpval(name);
     if (pu < 0) return -1;
     return this.addUp(name, 0, pu);
@@ -904,11 +908,14 @@ class Compiler {
       return;
     }
     this.exp(fs, { type: "name", name: s.path[0] }, 1);
-    for (let i = 1; i < s.path.length - (s.method ? 0 : 1); i++) {
+    const last = s.method || s.path[s.path.length - 1];
+    const limit = s.method ? s.path.length : s.path.length - 1;
+    for (let i = 1; i < limit; i++) {
       fs.emitBx(this.OP.GETFIELD, 0, fs.addK(s.path[i]));
     }
-    const last = s.method || s.path[s.path.length - 1];
+    fs.emit(this.OP.SWAP);
     fs.emitBx(this.OP.SETFIELD, 0, fs.addK(last));
+    fs.emit(this.OP.POP);
   }
   statAssign(fs, s) {
     const n = s.vars.length;
@@ -949,12 +956,15 @@ class Compiler {
       else fs.emitBx(this.OP.SETGLOBAL, 0, fs.addK(t.name));
     } else if (t.type === "field") {
       this.exp(fs, t.obj, 1);
-      fs.emit(this.OP.MOVE);
+      fs.emit(this.OP.SWAP);
       fs.emitBx(this.OP.SETFIELD, 0, fs.addK(t.name));
+      fs.emit(this.OP.POP);
     } else if (t.type === "index") {
       this.exp(fs, t.obj, 1);
+      fs.emit(this.OP.SWAP);
       this.exp(fs, t.key, 1);
       fs.emit(this.OP.SETTABLE);
+      fs.emit(this.OP.POP);
     } else throw new Error("Invalid assignment target");
   }
   statIf(fs, s) {
@@ -1022,11 +1032,11 @@ class Compiler {
     const bodyStart = fs.here();
     const vr = fs.addLocal(s.name);
     for (const st of s.body) this.stat(fs, st);
-    const cont = fs.here();
+    const loopIns = fs.here();
     fs.emitSBx(this.OP.FORLOOP, r0, bodyStart - (fs.here() + 1));
-    fs.patchSBx(prep, fs.here());
+    fs.patchSBx(prep, loopIns);
     for (const b of loop.breaks) fs.patchSBx(b, fs.here());
-    for (const c of loop.continues) fs.patchSBx(c, cont);
+    for (const c of loop.continues) fs.patchSBx(c, loopIns);
     fs.leaveBlock();
     void vr;
   }
@@ -1046,24 +1056,21 @@ class Compiler {
     fs.emit(this.OP.SETLOCAL, ctl);
     fs.emit(this.OP.SETLOCAL, stt);
     fs.emit(this.OP.SETLOCAL, g);
-    const jmp = fs.emitSBx(this.OP.JMP, 0, 0);
+    const namesRegs = s.names.map((n) => fs.addLocal(n));
+    void namesRegs;
     fs.enterBlock(true);
     const loop = fs.loopBlock();
+    const jmp = fs.emitSBx(this.OP.JMP, 0, 0);
     const bodyStart = fs.here();
-    const regs = s.names.map((n) => fs.addLocal(n));
     for (const st of s.body) this.stat(fs, st);
-    const cont = fs.here();
-    fs.patchSBx(jmp, cont);
+    const tforPc = fs.here();
+    fs.patchSBx(jmp, tforPc);
     fs.emit(this.OP.TFOR, g, s.names.length);
-    const test = fs.emitSBx(this.OP.TESTF, 0, 0);
-    fs.emit(this.OP.DUP);
-    fs.emit(this.OP.SETLOCAL, ctl);
-    for (let i = s.names.length - 1; i >= 0; i--) fs.emit(this.OP.SETLOCAL, regs[i]);
+    const exitJ = fs.emitSBx(this.OP.TESTNIL, 0, 0);
     fs.emitSBx(this.OP.JMP, 0, bodyStart - (fs.here() + 1));
-    fs.patchSBx(test, fs.here());
-    fs.emit(this.OP.POP);
+    fs.patchSBx(exitJ, fs.here());
     for (const b of loop.breaks) fs.patchSBx(b, fs.here());
-    for (const c of loop.continues) fs.patchSBx(c, cont);
+    for (const c of loop.continues) fs.patchSBx(c, tforPc);
     fs.leaveBlock();
   }
   statReturn(fs, s) {
@@ -1078,13 +1085,6 @@ class Compiler {
   resolve(fs, name) {
     const loc = fs.findLocal(name);
     if (loc) return { kind: "local", idx: loc.reg };
-    const up = fs.parent ? fs.searchUpval(name) : -1;
-    if (up >= 0) {
-      const mine = fs.upvalues.findIndex((u, i) => i === up) >= 0 ? up : fs.addUp(name, 0, up);
-      void mine;
-      const idx = fs.upvalues.findIndex((u) => u.name === name);
-      if (idx >= 0) return { kind: "upval", idx };
-    }
     if (fs.parent) {
       const u = fs.searchUpval(name);
       if (u >= 0) return { kind: "upval", idx: u };
@@ -1127,9 +1127,8 @@ class Compiler {
         fs.emitBx(this.OP.PUSHK, 0, fs.addK(node.value));
         break;
       case "varargs":
-        fs.emit(this.OP.VARARG, nret < 0 ? 0 : nret);
-        if (nret < 0) return;
-        return this.adjust(fs, 1, nret);
+        fs.emit(this.OP.VARARG, nret < 0 ? 0 : (nret || 1));
+        return;
       case "name": {
         const r = this.resolve(fs, node.name);
         if (r.kind === "local") fs.emit(this.OP.GETLOCAL, r.idx);
@@ -1218,14 +1217,12 @@ class Compiler {
       this.exp(fs, node.func, 1);
       fs.emitBx(this.OP.SELF, 0, fs.addK(node.method));
       for (const a of node.args) this.exp(fs, a, 1);
-      const want = nret < 0 ? 0 : (nret === undefined ? 1 : nret);
-      fs.emit(this.OP.CALL, node.args.length + 1, want);
-      return;
+    } else {
+      this.exp(fs, node.func, 1);
+      for (const a of node.args) this.exp(fs, a, 1);
     }
-    this.exp(fs, node.func, 1);
-    for (const a of node.args) this.exp(fs, a, 1);
-    const want = nret < 0 ? 0 : (nret === undefined ? 1 : nret);
-    fs.emit(this.OP.CALL, node.args.length, want);
+    const want = nret < 0 ? 0 : nret === undefined ? 2 : nret + 1;
+    fs.emit(this.OP.CALL, node.args.length + (node.method ? 1 : 0), want);
   }
   expTable(fs, node) {
     fs.emit(this.OP.NEWTABLE);
@@ -1361,7 +1358,7 @@ function serializeProto(proto) {
     u8(n >>> 24);
   };
   const writeStr = (str) => {
-    const b = Buffer.from(str, "utf8");
+    const b = utf8Encode(str);
     u32(b.length);
     for (let i = 0; i < b.length; i++) u8(b[i]);
   };
@@ -1400,6 +1397,18 @@ function serializeProto(proto) {
   };
   walk(proto);
   return Uint8Array.from(chunks);
+}
+
+function utf8Encode(str) {
+  if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(str);
+  const out = [];
+  for (let i = 0; i < str.length; i++) {
+    let c = str.charCodeAt(i);
+    if (c < 0x80) out.push(c);
+    else if (c < 0x800) out.push(0xc0 | (c >> 6), 0x80 | (c & 0x3f));
+    else out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+  }
+  return Uint8Array.from(out);
 }
 
 function luaStr(s) {
@@ -1464,16 +1473,16 @@ function generateVM(proto, options) {
     PUSHFALSE: `S=S+1;R[S]=false`,
     PUSHK: `S=S+1;R[S]=K[Bx+1]`,
     PUSHI: `S=S+1;R[S]=sBx`,
-    GETLOCAL: `S=S+1;do local _b=Bxes[A];R[S]=_b and _b.v or L[A]end`,
+    GETLOCAL: `S=S+1;do local _b=Bxes[A];if _b then R[S]=_b.v else R[S]=L[A]end end`,
     SETLOCAL: `do local _v=R[S];S=S-1;local _b=Bxes[A];if _b then _b.v=_v end;L[A]=_v end`,
     GETUPVAL: `S=S+1;R[S]=UV[A+1].v`,
     SETUPVAL: `UV[A+1].v=R[S];S=S-1`,
     GETGLOBAL: `S=S+1;R[S]=ENV[K[Bx+1]]`,
     SETGLOBAL: `ENV[K[Bx+1]]=R[S];S=S-1`,
     GETTABLE: `do local _k=R[S];S=S-1;R[S]=R[S][_k]end`,
-    SETTABLE: `do local _k=R[S];local _v=R[S-1];S=S-2;R[S][_k]=_v;S=S-1 end`,
+    SETTABLE: `do local _k=R[S];local _v=R[S-1];S=S-2;R[S][_k]=_v end`,
     GETFIELD: `R[S]=R[S][K[Bx+1]]`,
-    SETFIELD: `do local _v=R[S-1];R[S][K[Bx+1]]=_v;S=S-2 end`,
+    SETFIELD: `do local _v=R[S];S=S-1;R[S][K[Bx+1]]=_v end`,
     SELF: `do local _o=R[S];S=S+1;R[S]=_o;R[S-1]=_o[K[Bx+1]]end`,
     NEWTABLE: `S=S+1;R[S]={}`,
     ADD: `R[S-1]=R[S-1]+R[S];S=S-1`,
@@ -1502,19 +1511,20 @@ function generateVM(proto, options) {
     JMP: `pc=pc+sBx`,
     TESTF: `do local _v=R[S];S=S-1;if not _v then pc=pc+sBx end end`,
     TESTT: `do local _v=R[S];S=S-1;if _v then pc=pc+sBx end end`,
+    TESTNIL: `do local _v=R[S];S=S-1;if _v==nil then pc=pc+sBx end end`,
     ANDSKIP: `if not R[S] then pc=pc+sBx else S=S-1 end`,
     ORSKIP: `if R[S] then pc=pc+sBx else S=S-1 end`,
-    CALL: `do local _na=A;local _nr=B;local _base=S-_na;local _fn=R[_base];local _a=${names.tcreate}(_na);for _i=1,_na do _a[_i]=R[_base+_i]end;S=_base-1;local _r;if _nr==0 then _r=${names.tpack}(_fn(${names.unpack}(_a,1,_na)));for _i=1,_r.n do S=S+1;R[S]=_r[_i]end else _r={_fn(${names.unpack}(_a,1,_na))};for _i=1,_nr do S=S+1;R[S]=_r[_i]end end end`,
-    RETURN: `do local _n=A;if B==0 then local _o=S;local _t=${names.tcreate}(_o);for _i=1,_o do _t[_i]=R[_i]end;return ${names.unpack}(_t,1,_o) else if _n==0 then return else local _t=${names.tcreate}(_n);for _i=1,_n do _t[_i]=R[S-_n+_i]end;return ${names.unpack}(_t,1,_n)end end end`,
+    CALL: `do local _na=A;local _nr=B;local _base=S-_na;local _fn=R[_base];local _a=${names.tcreate}(_na);for _i=1,_na do _a[_i]=R[_base+_i]end;S=_base-1;if _nr==0 then local _r=${names.tpack}(_fn(${names.unpack}(_a,1,_na)));for _i=1,_r.n do S=S+1;R[S]=_r[_i]end elseif _nr==1 then _fn(${names.unpack}(_a,1,_na)) else local _r={_fn(${names.unpack}(_a,1,_na))};for _i=1,_nr-1 do S=S+1;R[S]=_r[_i]end end end`,
+    RETURN: `do local _n=A;if B==0 then local _o=S;local _t=${names.tcreate}(_o);for _i=1,_o do _t[_i]=R[_i]end;return ${names.unpack}(_t,1,_o) elseif _n==0 then return else local _t=${names.tcreate}(_n);for _i=1,_n do _t[_i]=R[S-_n+_i]end;return ${names.unpack}(_t,1,_n)end end`,
     FORPREP: `do L[A]=L[A]-L[A+2];pc=pc+sBx end`,
     FORLOOP: `do L[A]=L[A]+L[A+2];local _s=L[A+2];if(_s>=0 and L[A]<=L[A+1])or(_s<0 and L[A]>=L[A+1])then pc=pc+sBx;L[A+3]=L[A];local _b=Bxes[A+3];if _b then _b.v=L[A]end end end`,
-    TFOR: `do local _g=L[A];local _n=B;local _res={_g(L[A+1],L[A+2])};S=S+1;R[S]=_res[1];for _i=2,_n do S=S+1;R[S]=_res[_i]end end`,
+    TFOR: `do local _g=L[A];local _n=B;local _res=${names.tpack}(_g(L[A+1],L[A+2]));for _i=1,_n do local _ri=A+2+_i;L[_ri]=_res[_i];local _bx=Bxes[_ri];if _bx then _bx.v=_res[_i]end end;if _res[1]~=nil then L[A+2]=_res[1]end;S=S+1;R[S]=_res[1]end`,
     CLOSURE: `do local _pr=P[Bx+1];local _uv=${names.tcreate}(A);for _i=1,A do local _d=_pr.u[_i];if _d.s==1 then local _b=Bxes[_d.i];if not _b then _b={v=L[_d.i]};Bxes[_d.i]=_b end;_uv[_i]=_b else _uv[_i]=UV[_d.i+1]end end;S=S+1;R[S]=${names.exec}(_pr,_uv,ENV)end`,
     VARARG: `do local _n=A;if _n==0 then for _i=1,#VA do S=S+1;R[S]=VA[_i]end else for _i=1,_n do S=S+1;R[S]=VA[_i]end end end`,
     POP: `R[S]=nil;S=S-1`,
     DUP: `S=S+1;R[S]=R[S-1]`,
     CLOSE: `for _i=A,#Bxes do Bxes[_i]=nil end`,
-    MOVE: `S=S+1;R[S]=R[S-1]`,
+    SWAP: `do local _t=R[S];R[S]=R[S-1];R[S-1]=_t end`,
     LOADBOOL: `S=S+1;R[S]=A~=0`,
   };
 
@@ -1551,6 +1561,7 @@ function generateVM(proto, options) {
   const parts = [];
   parts.push(`-- This script was protected using ${PRODUCT} ${VERSION}${invite}`);
   parts.push(`return(function(...)`);
+  parts.push(`if buffer==nil then local _B={} local function _c(n)local t={n=n}for i=0,n-1 do t[i]=0 end return t end local function _r8(b,o)return b[o]or 0 end local function _w8(b,o,v)b[o]=v%256 end local function _r16(b,o)return _r8(b,o)+_r8(b,o+1)*256 end local function _r32(b,o)return _r8(b,o)+_r8(b,o+1)*256+_r8(b,o+2)*65536+_r8(b,o+3)*16777216 end local function _rs(b,o,n)local t={}for i=1,n do t[i]=string.char(_r8(b,o+i-1))end return table.concat(t)end local function _cp(d,doff,s,soff,n)for i=0,n-1 do _w8(d,doff+i,_r8(s,soff+i))end end buffer={create=_c,readu8=_r8,readu16=_r16,readu32=_r32,readstring=_rs,writeu8=_w8,writeu32=function(b,o,v)_w8(b,o,v)_w8(b,o+1,math.floor(v/256))_w8(b,o+2,math.floor(v/65536))_w8(b,o+3,math.floor(v/16777216))end,fill=function(b,o,v,n)for i=0,n-1 do _w8(b,o+i,v)end end,copy=_cp,tostring=function(b)return _rs(b,0,b.n or #b)end} end`);
   parts.push(`local ${names.ru8},${names.ru16},${names.ru32},${names.rstr}=buffer.readu8,buffer.readu16,buffer.readu32,buffer.readstring`);
   parts.push(`local ${names.wu8},${names.w32},${names.bcreate},${names.bfill},${names.bcopy},${names.btostring}=buffer.writeu8,buffer.writeu32,buffer.create,buffer.fill,buffer.copy,buffer.tostring`);
   parts.push(`local ${names.bxor},${names.band},${names.bor},${names.bnot},${names.rshift},${names.lshift}=bit32.bxor,bit32.band,bit32.bor,bit32.bnot,bit32.rshift,bit32.lshift`);
@@ -1668,33 +1679,19 @@ function safeMinify(source) {
 
 function generateCompatible(source, discordInvite, parseErr) {
   const min = safeMinify(source);
-  const id = identPool();
-  const exec = id();
   const invite = discordInvite ? " " + discordInvite : "";
-  const bytes = Array.from(Buffer.from(min, "utf8"));
-  const key = randomInt(1, 255);
-  const enc = bytes.map((b) => b ^ key);
-  const chunks = [];
-  for (let i = 0; i < enc.length; i += 80) chunks.push(enc.slice(i, i + 80).join(","));
-  const tbl = chunks.map((c, i) => `[${i}]={${c}}`).join(";");
   return `-- This script was protected using ${PRODUCT} ${VERSION}${invite}
 return(function(...)
-local _k=${key}
-local _t={${tbl}}
-local _n=${chunks.length}
-local _b={}
-local _o=1
-for i=0,_n-1 do local r=_t[i] for j=1,#r do _b[_o]=string.char(bit32.bxor(r[j],_k))_o=_o+1 end end
-local _s=table.concat(_b)
-local _ld=loadstring or load
-if type(_ld)~="function" then error("KingmorArmor: host has no load",0) end
-local _fn,e=_ld(_s)
-if not _fn then error(e,0) end
-return _fn(...)
+local _Genv=(type(getfenv)=="function"and(getfenv(0)or getfenv()))or(type(getgenv)=="function"and getgenv())or _G
+local function __payload(...)
+${min}
+end
+return __payload(...)
 end)(...)`;
 }
 
 export { obfuscate, compileSource, VERSION, PRODUCT };
+
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = { obfuscate, compileSource, VERSION, PRODUCT };
