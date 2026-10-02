@@ -1219,7 +1219,7 @@ app.get("/health", (req, res) => res.status(200).json({ status: "ok", uptime: pr
 
 app.listen(PORT, () => {
   console.log(`👑 Kingmor running on port ${PORT}`);
-  console.log(`🔐 API_SECRET: ${API_SECRET ? "loaded (" + API_SECRET.length + " chars)" : "MISSING"}`);
+  console.log(`🔐 API_SECRET: ${API_SECRET ? "loaded (" + API_SECRET.length + " chars)" : "M1SSING"}`);
   console.log(`💎 Premium: ${PREMIUM_PRICE_IDR} / ${PREMIUM_PRICE_USD}`);
   console.log(`📢 Discord: ${DISCORD_INVITE}`);
 });
