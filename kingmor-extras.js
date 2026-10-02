@@ -191,7 +191,7 @@ module.exports = function createExtras(ctx) {
           await interaction.reply({ content: "❌ No permission.", ephemeral: true }).catch(() => {});
           return true;
         }
-        await interaction.deferReply({ ephemeral: true }).catch(() => {});
+        await interaction.deferReply({ ephemeral: false }).catch(() => {});
 
         const targetUser = interaction.options.getUser("user");
         const targetRole = interaction.options.getRole("role");
