@@ -530,7 +530,19 @@ new SlashCommandBuilder()
 client.once("ready", async () => {
   const rest = new REST({ version: "10" }).setToken(CONFIG.token);
   try {
-    await rest.put(Routes.applicationCommands(CONFIG.clientId), { body: commands });
+    // Clear global commands biar gak dobel
+    await rest.put(Routes.applicationCommands(CONFIG.clientId), { body: [] });
+    console.log("🧹 Cleared global commands");
+
+    // Register ke SEMUA guild → INSTANT update
+    for (const [guildId, guild] of client.guilds.cache) {
+      await rest.put(
+        Routes.applicationGuildCommands(CONFIG.clientId, guildId),
+        { body: commands }
+      );
+      console.log(`✅ Registered ${commands.length} commands in: ${guild.name}`);
+    }
+
     console.log(`👑 Bot ready: ${client.user.tag}`);
     console.log(`🔗 API_BASE: ${CONFIG.apiBase}`);
     console.log(`💎 Premium: ${PREMIUM_INFO.priceIDR} / ${PREMIUM_INFO.priceUSD}`);
