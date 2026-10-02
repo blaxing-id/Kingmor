@@ -1,28 +1,20 @@
 {
   "name": "kingmor",
   "version": "2.0.0",
-  "description": "Kingmor - Premium Lua Script Protection System",
+  "description": "Kingmor - Lua protection system with Discord bot",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "bot": "node bot.js",
-    "dev": "nodemon server.js",
-    "both": "concurrently \"node server.js\" \"node bot.js\""
+    "start": "node server.js & node bot.js",
+    "start:server": "node server.js",
+    "start:bot": "node bot.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "axios": "^1.7.7",
     "discord.js": "^14.16.3",
     "express": "^4.21.1",
     "express-session": "^1.18.1"
-  },
-  "devDependencies": {
-    "concurrently": "^9.0.1",
-    "nodemon": "^3.1.7"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "keywords": ["lua", "roblox", "protection", "kingmor", "key-system"],
-  "author": "Kingmor",
-  "license": "MIT"
+  }
 }
