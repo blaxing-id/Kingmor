@@ -471,13 +471,14 @@ const commands = [
   new SlashCommandBuilder()
     .setName("premiuminfo")
     .setDescription("View premium info, price, and how to buy"),
+()
 
-  // ==================== KEYPREMIUM (OWNER ONLY) ====================
-  new SlashCommandBuilder()
-    .setName("keypremium")
-    .setDescription("[OWNER ONLY] Create premium redeem keys for the web dashboard")
-    .addIntegerOption(o => o.setName("days").setDescription("Duration in days (0 = lifetime)").setRequired(true))
-    .addIntegerOption(o => o.setName("amount").setDescription("Number of keys (default 1, max 50)").setRequired(false)),
+    // ==================== GENKEYPREMIUM (OWNER ONLY) ====================
+new SlashCommandBuilder()
+  .setName("genkeypremium")
+  .setDescription("[OWNER ONLY] Generate premium redeem keys for the web dashboard")
+  .addIntegerOption(o => o.setName("days").setDescription("Duration in days (0 = lifetime)").setRequired(true))
+  .addIntegerOption(o => o.setName("amount").setDescription("Number of keys (default 1, max 50)").setRequired(false)),
 
   // ==================== PREMIUMWHITELIST (OWNER ONLY) ====================
   new SlashCommandBuilder()
@@ -1207,13 +1208,14 @@ client.on("interactionCreate", async interaction => {
       const commandName = interaction.commandName;
 
       // ==================== KEYPREMIUM (OWNER ONLY) ====================
-      if (commandName === "keypremium") {
-        if (interaction.user.id !== OWNER_ID) {
-          return interaction.reply({
-            content: "❌ This command is restricted to the bot owner only.",
-            ephemeral: true
-          }).catch(() => {});
-        }
+      // ==================== GENKEYPREMIUM (OWNER ONLY) ====================
+if (commandName === "genkeypremium") {
+  if (interaction.user.id !== OWNER_ID) {
+    return interaction.reply({
+      content: "❌ This command is restricted to the bot owner only.",
+      ephemeral: true
+    }).catch(() => {});
+  }
 
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
 
