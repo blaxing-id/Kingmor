@@ -18,6 +18,8 @@ const PREMIUM_FILE = path.join(DATA_DIR, "premium.json");
 const PREMIUM_KEYS_FILE = path.join(DATA_DIR, "premium_keys.json");
 const HWID_COOLDOWN_FILE = path.join(DATA_DIR, "hwid_cooldowns.json");
 
+const PUBLIC_DIR = path.join(__dirname, "public");
+
 const ADMIN_USER_ID = "1485940617342353594";
 const DISCORD_INVITE = "https://discord.gg/QgubzPzzy";
 const BOT_INVITE = "https://discord.com/oauth2/authorize?client_id=1545625902585487370&permissions=2952873984&integration_type=0&scope=bot";
@@ -36,6 +38,41 @@ if (!fs.existsSync(PREMIUM_KEYS_FILE)) fs.writeFileSync(PREMIUM_KEYS_FILE, "[]",
 if (!fs.existsSync(HWID_COOLDOWN_FILE)) fs.writeFileSync(HWID_COOLDOWN_FILE, "{}", "utf8");
 
 app.use(express.json({ limit: "15mb" }));
+
+// ==================== STATIC FILES (favicon, dll) ====================
+app.use(express.static(PUBLIC_DIR, {
+  maxAge: "7d",
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith(".webmanifest")) {
+      res.setHeader("Content-Type", "application/manifest+json");
+    }
+  },
+}));
+
+// Fallback routes: biar tetap jalan walau file ditaruh di root, bukan /public
+const faviconFallbacks = [
+  "favicon.ico",
+  "favicon-16x16.png",
+  "favicon-32x32.png",
+  "apple-touch-icon.png",
+  "android-chrome-192x192.png",
+  "android-chrome-512x512.png",
+  "site.webmanifest",
+];
+for (const file of faviconFallbacks) {
+  app.get(`/${file}`, (req, res) => {
+    const inPublic = path.join(PUBLIC_DIR, file);
+    const inRoot = path.join(__dirname, file);
+    if (fs.existsSync(inPublic)) return res.sendFile(inPublic);
+    if (fs.existsSync(inRoot)) {
+      if (file.endsWith(".webmanifest")) {
+        res.setHeader("Content-Type", "application/manifest+json");
+      }
+      return res.sendFile(inRoot);
+    }
+    return res.status(404).send("Not found");
+  });
+}
 
 app.use(
   session({
@@ -140,6 +177,12 @@ function requireInternalSecret(req, res, next) {
 
 // ==================== UI KIT ====================
 const FONTS = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">`;
+
+const FAVICON = `<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+<link rel="icon" href="/favicon.ico">
+<link rel="manifest" href="/site.webmanifest">`;
 
 const CSS = `
 :root{--bg:#0a0908;--panel:#14110e;--panel2:#1a1612;--line:#2b241c;--line2:#3d3226;--gold:#f2c14e;--amber:#e08a00;--ink:#f6f0e4;--mute:#a39786;--ok:#6fdc8c;--bad:#ff6b5e;--mono:'JetBrains Mono','Courier New',monospace}
@@ -358,6 +401,7 @@ function page({ req, title, active, body, script, bare }) {
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>${escapeHtml(title)}</title>
 <meta name="theme-color" content="#0a0908">
+${FAVICON}
 ${FONTS}
 <style>${CSS}</style>
 </head>
