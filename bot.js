@@ -242,7 +242,7 @@ async function checkPanelLimit(ownerId) {
     const res = await axios.get(`${CONFIG.apiBase}/api/panels/count`, {
       headers: internalHeaders, params: { ownerId }, timeout: 8000
     });
-    return res.data; // { count, max, premium, remaining, canCreate }
+    return res.data;
   } catch (err) {
     console.error(`❌ checkPanelLimit failed: ${describeAxiosError(err)}`);
     const cfg = readConfig();
@@ -284,8 +284,6 @@ async function updateGuildsList() {
 }
 
 // ==================== EXTRAS (/keypremium + /whitelist dropdown) ====================
-
-// ==================== EXTRAS: /keypremium + /whitelist (dropdown) ====================
 const createExtras = function createExtras(ctx) {
   const {
     CONFIG, OWNER_ID, internalHeaders,
@@ -294,7 +292,6 @@ const createExtras = function createExtras(ctx) {
     generateKey, parseDuration, formatDuration, describeAxiosError
   } = ctx;
 
-  // ==================== COMMAND DEFINITIONS ====================
   const commands = [
     new SlashCommandBuilder()
       .setName("keypremium")
@@ -311,8 +308,6 @@ const createExtras = function createExtras(ctx) {
       .toJSON()
   ];
 
-  // ==================== HELPERS ====================
-  // Returns { ms: number|null, label } or null if invalid. ms=null means lifetime.
   function parsePremiumDuration(input) {
     const s = String(input).trim().toLowerCase();
     if (["lifetime", "forever", "perm", "permanent", "0"].includes(s)) {
@@ -343,12 +338,11 @@ const createExtras = function createExtras(ctx) {
       );
   }
 
-  // Core whitelist logic. Returns a message string.
+  // ⭐ UPDATED: Whitelist publik dengan ping user/role + link panel
   async function doWhitelist(interaction, { targetType, targetId, days, scriptId }) {
     const scriptInfo = await fetchScriptById(scriptId);
     if (!scriptInfo) return "❌ That script no longer exists.";
 
-    // Script harus milik pengguna ini, atau script panel di server ini
     const panel = getGuildPanelScript(interaction.guildId);
     const allowed =
       String(scriptInfo.ownerId) === String(interaction.user.id) ||
@@ -364,7 +358,14 @@ const createExtras = function createExtras(ctx) {
       k.scriptId === scriptId &&
       !(k.expiry && new Date(k.expiry) < new Date())
     );
-    const durationText = days === 0 ? "lifetime" : `${days} day(s)`;
+
+    // Ambil channel panel untuk script ini (fallback ke channel tempat command dijalankan)
+    const panelChannelId = cfg.panelChannelId || interaction.channelId;
+    const panelMention = `<#${panelChannelId}>`;
+
+    // Format pesan whitelist publik: ping user/role dulu, lalu message
+    const formatWhitelistMessage = (mention) =>
+      `${mention}\nYou have been whitelisted!\nYou can access the script via this message --> ${panelMention}`;
 
     if (targetType === "user") {
       if (hasActive(targetId)) return `❌ <@${targetId}> already has access to **${scriptInfo.name}**.`;
@@ -386,7 +387,9 @@ const createExtras = function createExtras(ctx) {
           await member.roles.add(buyerRoleId);
         } catch {}
       }
-      return `✅ <@${targetId}> has been whitelisted for **${scriptInfo.name}** (${durationText}).\nThey can press **Get Script** on the panel to get their loader.`;
+
+      // Return pesan dengan ping user
+      return formatWhitelistMessage(`<@${targetId}>`);
     }
 
     // role
@@ -410,12 +413,12 @@ const createExtras = function createExtras(ctx) {
       }
     }
     writeKeys(keys);
-    const note = skipped > 0 ? `, ${skipped} already had access` : "";
-    return `✅ <@&${targetId}> has been whitelisted for **${scriptInfo.name}** (${durationText}).\n${added} member(s) added${note}.`;
+
+    // Return pesan dengan ping role
+    return formatWhitelistMessage(`<@&${targetId}>`);
   }
 
   // ==================== HANDLER ====================
-  // Return true kalau interaksi sudah ditangani di sini.
   async function handle(interaction) {
     try {
       // ---------- /keypremium ----------
@@ -487,7 +490,6 @@ const createExtras = function createExtras(ctx) {
         const targetType = targetUser ? "user" : "role";
         const targetId = targetUser ? targetUser.id : targetRole.id;
 
-        // Script milik pengguna; kalau tidak punya, pakai script panel server ini
         let candidates = await getScriptsByOwner(interaction.user.id);
         if (candidates.length === 0) {
           const panel = getGuildPanelScript(interaction.guildId);
@@ -658,7 +660,6 @@ const commands = [
     .setName("premiuminfo")
     .setDescription("View premium info, price, and how to buy"),
 
-  // ==================== PREMIUMWHITELIST (OWNER ONLY) ====================
   new SlashCommandBuilder()
     .setName("premiumwhitelist")
     .setDescription("[OWNER ONLY] Grant or revoke Premium access for a user")
@@ -776,10 +777,8 @@ function scriptSelectOptions(scripts) {
 // ==================== INTERACTION HANDLER ====================
 client.on("interactionCreate", async interaction => {
   try {
-    // /keypremium, /whitelist (dengan dropdown) dan dropdown-nya ditangani di sini
     if (await extras.handle(interaction)) return;
 
-    // Blacklist check untuk semua interaksi di guild
     if ((interaction.isButton() || interaction.isModalSubmit() || interaction.isStringSelectMenu()) && interaction.guild) {
       const blCheck = await checkUserBlacklisted(interaction);
       if (blCheck) {
@@ -1262,7 +1261,6 @@ client.on("interactionCreate", async interaction => {
     if (interaction.isChatInputCommand()) {
       const commandName = interaction.commandName;
 
-      // ==================== PREMIUMWHITELIST (OWNER ONLY) ====================
       if (commandName === "premiumwhitelist") {
         if (interaction.user.id !== OWNER_ID) {
           return interaction.reply({
@@ -1640,7 +1638,6 @@ client.on("interactionCreate", async interaction => {
         }
       }
 
-      // ==================== FREEMODE (PREMIUM ONLY) ====================
       if (commandName === "freemode") {
         if (!hasPermission(interaction.member, interaction.guildId)) {
           return interaction.reply({ content: "❌ No permission.", ephemeral: true }).catch(() => {});
