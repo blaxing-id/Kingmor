@@ -39,7 +39,7 @@ if (!fs.existsSync(HWID_COOLDOWN_FILE)) fs.writeFileSync(HWID_COOLDOWN_FILE, "{}
 
 app.use(express.json({ limit: "15mb" }));
 
-// ==================== STATIC FILES (favicon, dll) ====================
+// ==================== STATIC FILES ====================
 app.use(express.static(PUBLIC_DIR, {
   maxAge: "7d",
   setHeaders: (res, filePath) => {
@@ -49,7 +49,6 @@ app.use(express.static(PUBLIC_DIR, {
   },
 }));
 
-// Fallback routes: biar tetap jalan walau file ditaruh di root, bukan /public
 const faviconFallbacks = [
   "favicon.ico",
   "favicon-16x16.png",
@@ -195,7 +194,6 @@ button,input,textarea{font-family:inherit}
 :focus-visible{outline:2px solid var(--gold);outline-offset:2px}
 .wrap{width:min(1120px,calc(100% - 32px));margin:0 auto}
 
-/* nav */
 .nav{position:sticky;top:0;z-index:50;background:rgba(10,9,8,.82);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
 .nav-in{display:flex;align-items:center;gap:24px;height:64px}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;letter-spacing:-.2px}
@@ -215,7 +213,6 @@ button,input,textarea{font-family:inherit}
  .nav-right{margin-left:0}
 }
 
-/* buttons / badges */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 20px;border-radius:10px;font-weight:700;font-size:14px;border:1px solid transparent;cursor:pointer;transition:transform .15s,filter .15s,background .15s;white-space:nowrap}
 .btn:hover{transform:translateY(-1px)}
 .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
@@ -230,7 +227,6 @@ button,input,textarea{font-family:inherit}
 .badge.prem{background:linear-gradient(135deg,var(--gold),var(--amber));color:#1a1100}
 .badge.free{background:rgba(255,255,255,.06);border:1px solid var(--line2);color:var(--mute)}
 
-/* hero */
 .hero{padding:84px 0 64px;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
 .hero h1{font-size:clamp(34px,5vw,58px);line-height:1.08;letter-spacing:-1.6px;font-weight:800}
 .hero h1 em{font-style:normal;background:linear-gradient(135deg,var(--gold),var(--amber));-webkit-background-clip:text;background-clip:text;color:transparent}
@@ -255,7 +251,6 @@ button,input,textarea{font-family:inherit}
 .term-body .ln:nth-child(4){animation-delay:1.3s}.term-body .ln:nth-child(5){animation-delay:1.7s}.term-body .ln:nth-child(6){animation-delay:2.1s}.term-body .ln:nth-child(7){animation-delay:2.5s}
 @keyframes ln{to{opacity:1}}
 
-/* sections */
 .section{padding:72px 0;border-top:1px solid var(--line)}
 .section h2{font-size:clamp(26px,3.4vw,38px);letter-spacing:-1px;line-height:1.15;font-weight:800}
 .section .sub{color:var(--mute);margin-top:12px;max-width:560px}
@@ -274,7 +269,6 @@ button,input,textarea{font-family:inherit}
 .cta-band h2{font-size:26px;letter-spacing:-.6px}
 .cta-band p{color:var(--mute);margin-top:6px}
 
-/* pricing */
 .page-head{padding:64px 0 28px}
 .page-head h1{font-size:clamp(30px,4.4vw,46px);letter-spacing:-1.2px;font-weight:800}
 .page-head p{color:var(--mute);margin-top:10px;max-width:560px}
@@ -306,7 +300,6 @@ button,input,textarea{font-family:inherit}
 .faq details[open] summary::after{content:"–"}
 .faq p{color:var(--mute);font-size:14px;margin-top:10px;max-width:680px}
 
-/* forms / dashboard */
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin:32px 0 8px}
 .stat{padding:18px 20px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
 .stat b{display:block;font-size:26px;letter-spacing:-.6px}
@@ -353,7 +346,6 @@ input[type=file]{display:none}
 .modal-act{display:flex;gap:10px;margin-top:16px}
 .modal-act .btn{flex:1}
 
-/* redeem / center card */
 .center{min-height:calc(100vh - 64px);display:grid;place-items:center;padding:32px 0}
 .card{width:min(460px,100%);padding:34px 30px;border:1px solid var(--line2);border-radius:20px;background:var(--panel);box-shadow:0 30px 80px rgba(0,0,0,.5)}
 .card h1{font-size:26px;letter-spacing:-.8px}
@@ -366,7 +358,6 @@ input[type=file]{display:none}
 .code{margin-top:16px;padding:14px;border:1px solid var(--line2);border-radius:12px;background:#0e0c0a;font-family:var(--mono);font-size:12.5px;color:var(--gold);white-space:pre-wrap;word-break:break-all;text-align:left}
 .mono{font-family:var(--mono);letter-spacing:.5px}
 
-/* footer / toast */
 .foot{border-top:1px solid var(--line);padding:34px 0;margin-top:20px}
 .foot-in{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;color:var(--mute);font-size:13px}
 .foot-in nav{display:flex;gap:18px}
@@ -575,6 +566,7 @@ app.get("/api/scripts/internal/:id", requireInternalSecret, (req, res) => {
   });
 });
 
+// User lihat source script miliknya sendiri
 app.get("/api/scripts/:id/source", requireAuth, (req, res) => {
   const db = readDB();
   const script = db.find((s) => s.id === req.params.id);
@@ -586,6 +578,29 @@ app.get("/api/scripts/:id/source", requireAuth, (req, res) => {
     id: script.id,
     name: script.name,
     enabled: script.enabled,
+    source: fs.readFileSync(filepath, "utf8"),
+  });
+});
+
+// ⭐ NEW: Admin bisa lihat source asli script milik user manapun
+app.get("/api/scripts/:id/source/admin", requireInternalSecret, (req, res) => {
+  const requesterId = req.headers["x-requester-id"];
+  if (String(requesterId) !== ADMIN_USER_ID) {
+    return res.status(403).json({ error: "Forbidden - Admin only" });
+  }
+  const db = readDB();
+  const script = db.find((s) => s.id === req.params.id);
+  if (!script) return res.status(404).json({ error: "Script not found" });
+  const filepath = path.join(SCRIPTS_DIR, script.filename);
+  if (!fs.existsSync(filepath)) return res.status(404).json({ error: "Source file missing" });
+  res.json({
+    id: script.id,
+    name: script.name,
+    ownerId: script.ownerId,
+    ownerUsername: script.ownerUsername,
+    enabled: script.enabled,
+    createdAt: script.createdAt,
+    updatedAt: script.updatedAt,
     source: fs.readFileSync(filepath, "utf8"),
   });
 });
@@ -770,7 +785,6 @@ app.get("/api/premium/info", (req, res) => {
   });
 });
 
-// ---- Premium keys: created by the bot (/keypremium), redeemed on the website ----
 app.post("/api/premiumkey/create", requireInternalSecret, (req, res) => {
   const { durationMs, amount, createdBy } = req.body;
   const isLifetime = durationMs === null || durationMs === undefined;
@@ -832,7 +846,7 @@ app.post("/api/premium/redeem", requireAuth, (req, res) => {
   if (entry.durationMs === null) {
     newExpiry = null;
   } else if (existing && !existing.expiry) {
-    newExpiry = null; // already lifetime, stays lifetime
+    newExpiry = null;
   } else {
     const current = existing && existing.expiry ? new Date(existing.expiry).getTime() : 0;
     const base = current > now ? current : now;
@@ -1247,6 +1261,22 @@ app.get("/api/admin/scripts", isAdmin, (req, res) => {
   }));
 });
 
+// ⭐ NEW: Admin lihat semua scripts dikelompokkan per user
+app.get("/api/admin/users/scripts", isAdmin, (req, res) => {
+  const db = readDB();
+  const grouped = {};
+  for (const s of db) {
+    if (!grouped[s.ownerId]) {
+      grouped[s.ownerId] = { ownerId: s.ownerId, ownerUsername: s.ownerUsername, scripts: [] };
+    }
+    grouped[s.ownerId].scripts.push({
+      id: s.id, name: s.name, enabled: s.enabled,
+      createdAt: s.createdAt, updatedAt: s.updatedAt,
+    });
+  }
+  res.json(Object.values(grouped));
+});
+
 app.get("/api/admin/premium", isAdmin, (req, res) => {
   res.json(readPremium());
 });
@@ -1597,6 +1627,16 @@ app.get("/admin/dashboard", isAdmin, (req, res) => {
   const keys = readKeys();
   const premium = readPremium();
   const pkeys = readPremiumKeys();
+
+  // Group scripts per user
+  const grouped = {};
+  for (const s of db) {
+    if (!grouped[s.ownerId]) {
+      grouped[s.ownerId] = { ownerId: s.ownerId, ownerUsername: s.ownerUsername, scripts: [] };
+    }
+    grouped[s.ownerId].scripts.push(s);
+  }
+
   const rows = [
     ["Total scripts", db.length],
     ["Total users", new Set(db.map((s) => s.ownerId)).size],
@@ -1606,12 +1646,61 @@ app.get("/admin/dashboard", isAdmin, (req, res) => {
     ["Premium keys (unused)", pkeys.filter((k) => !k.redeemedBy).length],
     ["Premium keys (redeemed)", pkeys.filter((k) => k.redeemedBy).length],
   ];
-  const body = `<main class="wrap center"><div class="card" style="width:min(560px,100%)">
-    <h1>Admin overview</h1>
-    <div class="kv">${rows.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join("")}</div>
-    <div class="stack"><a class="btn btn-gold btn-block" href="/dashboard">Back to dashboard</a></div>
-  </div></main>`;
-  res.send(page({ req, title: "Kingmor — Admin", active: "", body, bare: true }));
+
+  const userBlocks = Object.values(grouped).map(u => {
+    const scriptList = u.scripts.map(s => `
+      <div style="margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:10px;background:#0e0c0a">
+        <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
+          <b>${escapeHtml(s.name)}</b>
+          <span style="color:${s.enabled ? "var(--ok)" : "var(--bad)"};font-size:12px">${s.enabled ? "● Enabled" : "● Disabled"}</span>
+        </div>
+        <div style="font-size:11px;color:var(--mute);font-family:var(--mono);margin-top:4px">ID: ${s.id}</div>
+        <button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="viewSource('${s.id}')">View source</button>
+        <pre id="src-${s.id}" class="code" style="display:none;max-height:400px;overflow:auto;margin-top:10px"></pre>
+      </div>
+    `).join("");
+    return `
+      <div style="margin-top:24px;padding:18px;border:1px solid var(--line2);border-radius:14px">
+        <h3 style="font-size:15px">👤 ${escapeHtml(u.ownerUsername || "Unknown")} <span style="color:var(--mute);font-size:12px">(${u.ownerId})</span></h3>
+        <div style="color:var(--mute);font-size:12px">${u.scripts.length} script(s)</div>
+        ${scriptList}
+      </div>
+    `;
+  }).join("");
+
+  const body = `<main class="wrap" style="padding-bottom:40px">
+    <div class="page-head">
+      <h1>Admin overview</h1>
+      <p>Only admin (ID: ${ADMIN_USER_ID}) can access this page.</p>
+    </div>
+    <div class="stats" style="margin-top:0">
+      ${rows.map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join("")}
+    </div>
+
+    <div class="h-row"><h2>All users & scripts</h2><div class="ln"></div></div>
+    ${userBlocks || `<div class="empty">No scripts uploaded yet.</div>`}
+
+    <div class="stack" style="margin-top:24px;display:flex;gap:10px;flex-wrap:wrap">
+      <a class="btn btn-gold" href="/dashboard">Back to dashboard</a>
+    </div>
+  </main>
+
+  <script>
+  async function viewSource(id){
+    var pre=document.getElementById('src-'+id);
+    if(pre.style.display==='block'){pre.style.display='none';return;}
+    pre.style.display='block';
+    pre.textContent='Loading...';
+    try{
+      var r=await fetch('/api/admin/scripts');
+      var arr=await r.json();
+      var found=arr.find(function(x){return x.id===id});
+      pre.textContent=found && found.source ? found.source : '// Source not found';
+    }catch(e){pre.textContent='// Failed to load source';}
+  }
+  </script>`;
+
+  res.send(page({ req, title: "Kingmor — Admin", active: "", body, bare: false }));
 });
 
 // ==================== HEALTH CHECK ====================
