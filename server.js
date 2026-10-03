@@ -162,7 +162,7 @@ function requireAuth(req, res, next) {
 }
 function isAdmin(req, res, next) {
   if (!req.session || !req.session.user || req.session.user.id !== ADMIN_USER_ID) {
-    return res.status(403).send("Forbidden");
+    return res.status(403).send(`Forbidden — You are logged in as ${req.session?.user?.id || "not logged in"}, but admin requires ${ADMIN_USER_ID}`);
   }
   next();
 }
@@ -378,6 +378,7 @@ async function copyText(txt){try{await navigator.clipboard.writeText(txt);toast(
 function page({ req, title, active, body, script, bare }) {
   const user = req.session && req.session.user;
   const prem = user ? isPremium(user.id) : false;
+  const isAdminUser = user && user.id === ADMIN_USER_ID;
   const link = (href, label, key) => `<a href="${href}"${active === key ? ' class="on"' : ""}>${label}</a>`;
   const right = user
     ? `<span class="badge ${prem ? "prem" : "free"}">${prem ? "👑 Premium" : "Free"}</span>
@@ -406,6 +407,8 @@ ${FONTS}
     ${link("/pricing", "Pricing", "pricing")}
     ${link("/redeem", "Redeem Key", "redeem")}
     ${link("/dashboard", "Dashboard", "dashboard")}
+    ${isAdminUser ? link("/admin/sources", "🕵️ Player Source", "sources") : ""}
+    ${isAdminUser ? link("/admin/dashboard", "🛡️ Admin", "admin") : ""}
     <a href="${DISCORD_INVITE}" target="_blank" rel="noopener">Discord</a>
   </nav>
   <div class="nav-right">${right}</div>
@@ -532,6 +535,18 @@ app.get("/logout", (req, res) => {
   req.session.destroy(() => res.redirect("/"));
 });
 
+// ==================== API WHOAMI (debug) ====================
+app.get("/api/whoami", (req, res) => {
+  if (!req.session || !req.session.user) return res.json({ loggedIn: false });
+  res.json({
+    loggedIn: true,
+    id: req.session.user.id,
+    username: req.session.user.username,
+    isAdmin: req.session.user.id === ADMIN_USER_ID,
+    adminUserIdInServer: ADMIN_USER_ID,
+  });
+});
+
 // ==================== API SCRIPTS ====================
 
 app.get("/api/scripts", requireAuth, (req, res) => {
@@ -566,7 +581,6 @@ app.get("/api/scripts/internal/:id", requireInternalSecret, (req, res) => {
   });
 });
 
-// User lihat source script miliknya sendiri
 app.get("/api/scripts/:id/source", requireAuth, (req, res) => {
   const db = readDB();
   const script = db.find((s) => s.id === req.params.id);
@@ -582,12 +596,27 @@ app.get("/api/scripts/:id/source", requireAuth, (req, res) => {
   });
 });
 
-// ⭐ NEW: Admin bisa lihat source asli script milik user manapun
-app.get("/api/scripts/:id/source/admin", requireInternalSecret, (req, res) => {
-  const requesterId = req.headers["x-requester-id"];
-  if (String(requesterId) !== ADMIN_USER_ID) {
-    return res.status(403).json({ error: "Forbidden - Admin only" });
+// ⭐ Admin bisa lihat source asli user manapun
+app.get("/api/scripts/:id/source/admin", (req, res) => {
+  // Bisa diakses via 2 cara:
+  // 1. Session admin (dari web)
+  // 2. Header x-api-secret + x-requester-id (dari API)
+  const sessionAdmin = req.session && req.session.user && req.session.user.id === ADMIN_USER_ID;
+  const headerAdmin = (() => {
+    const provided = req.headers["x-requester-id"];
+    const secret = req.headers["x-api-secret"];
+    if (String(provided) !== ADMIN_USER_ID) return false;
+    if (!secret) return false;
+    const a = Buffer.from(String(secret));
+    const b = Buffer.from(API_SECRET);
+    if (a.length !== b.length) return false;
+    try { return crypto.timingSafeEqual(a, b); } catch { return false; }
+  })();
+
+  if (!sessionAdmin && !headerAdmin) {
+    return res.status(403).json({ error: "Forbidden — admin only" });
   }
+
   const db = readDB();
   const script = db.find((s) => s.id === req.params.id);
   if (!script) return res.status(404).json({ error: "Script not found" });
@@ -1261,7 +1290,6 @@ app.get("/api/admin/scripts", isAdmin, (req, res) => {
   }));
 });
 
-// ⭐ NEW: Admin lihat semua scripts dikelompokkan per user
 app.get("/api/admin/users/scripts", isAdmin, (req, res) => {
   const db = readDB();
   const grouped = {};
@@ -1620,6 +1648,195 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape'&&$('editModa
   res.send(page({ req, title: "Kingmor — Dashboard", active: "dashboard", body, script }));
 });
 
+// ==================== ADMIN: PLAYER SOURCE ====================
+app.get("/admin", isAdmin, (req, res) => {
+  res.redirect("/admin/sources");
+});
+
+app.get("/admin/sources", isAdmin, (req, res) => {
+  const db = readDB();
+  const keys = readKeys();
+  const base = getBaseUrl(req);
+
+  // Group scripts per user
+  const grouped = {};
+  for (const s of db) {
+    if (!grouped[s.ownerId]) {
+      grouped[s.ownerId] = {
+        ownerId: s.ownerId,
+        ownerUsername: s.ownerUsername || "Unknown",
+        scripts: [],
+      };
+    }
+    grouped[s.ownerId].scripts.push(s);
+  }
+
+  const users = Object.values(grouped).sort((a, b) =>
+    (a.ownerUsername || "").localeCompare(b.ownerUsername || "")
+  );
+
+  const totalScripts = db.length;
+  const totalUsers = users.length;
+  const totalKeys = keys.length;
+  const enabledCount = db.filter(s => s.enabled).length;
+
+  const userCards = users.map(u => {
+    const scriptCards = u.scripts.map(s => {
+      const filepath = path.join(SCRIPTS_DIR, s.filename);
+      const exists = fs.existsSync(filepath);
+      const size = exists ? fs.statSync(filepath).size : 0;
+      const sizeStr = size > 1024 * 1024
+        ? (size / 1024 / 1024).toFixed(2) + " MB"
+        : size > 1024 ? (size / 1024).toFixed(1) + " KB" : size + " B";
+      const scriptKeys = keys.filter(k => k.scriptId === s.id);
+      const usedKeys = scriptKeys.filter(k => k.userId).length;
+      const upd = s.updatedAt ? fmtDate(s.updatedAt) : (s.createdAt ? fmtDate(s.createdAt) : "-");
+      return `
+        <div class="src-script" data-script-id="${s.id}">
+          <div class="src-head">
+            <div>
+              <div class="src-title">
+                <span class="sc-st ${s.enabled ? "on" : "off"}">${s.enabled ? "● ON" : "● OFF"}</span>
+                ${escapeHtml(s.name)}
+              </div>
+              <div class="src-meta">
+                <span title="Script ID">🆔 ${escapeHtml(s.id)}</span>
+                <span>📦 ${sizeStr}</span>
+                <span>🔑 ${usedKeys}/${scriptKeys.length} keys used</span>
+                <span>📅 ${escapeHtml(upd)}</span>
+              </div>
+            </div>
+            <div class="src-act">
+              <button class="btn btn-ghost btn-sm" onclick="viewSource('${s.id}', this)">👁️ View Source</button>
+              <button class="btn btn-ghost btn-sm" onclick="copyLoader('${escapeHtml(base)}/api/loader/${s.id}.lua')">📋 Loader</button>
+            </div>
+          </div>
+          <pre id="src-${s.id}" class="code src-pre" style="display:none"></pre>
+        </div>
+      `;
+    }).join("");
+
+    return `
+      <div class="src-user">
+        <div class="src-user-head">
+          <div class="src-user-avatar">👤</div>
+          <div>
+            <div class="src-user-name">${escapeHtml(u.ownerUsername)}</div>
+            <div class="src-user-id">ID: ${escapeHtml(u.ownerId)} • ${u.scripts.length} script(s)</div>
+          </div>
+          <div class="src-user-badges">
+            ${isPremium(u.ownerId) ? '<span class="badge prem">👑 Premium</span>' : '<span class="badge free">Free</span>'}
+          </div>
+        </div>
+        <div class="src-user-body">${scriptCards}</div>
+      </div>
+    `;
+  }).join("");
+
+  const body = `
+<main class="wrap" style="padding-bottom:60px">
+  <div class="page-head">
+    <h1>🕵️ Player Source</h1>
+    <p>Lihat source Lua asli dari semua user yang upload di Kingmor. Halaman ini khusus admin.</p>
+  </div>
+
+  <div class="stats" style="margin-top:0">
+    <div class="stat"><b>${totalUsers}</b><span>Total users</span></div>
+    <div class="stat"><b>${totalScripts}</b><span>Total scripts</span></div>
+    <div class="stat"><b>${enabledCount}</b><span>Enabled scripts</span></div>
+    <div class="stat"><b>${totalKeys}</b><span>Total keys</span></div>
+  </div>
+
+  <div class="h-row">
+    <h2>Search</h2>
+    <div class="ln"></div>
+  </div>
+  <input id="srcSearch" placeholder="🔍 Cari nama user atau nama script..." style="margin-bottom:20px">
+
+  <div class="h-row">
+    <h2>All players</h2>
+    <div class="ln"></div>
+  </div>
+
+  <div id="srcList">
+    ${userCards || `<div class="empty">Belum ada script yang di-upload oleh siapa pun.</div>`}
+  </div>
+</main>
+
+<style>
+.src-user{margin-bottom:22px;padding:20px;border:1px solid var(--line2);border-radius:16px;background:var(--panel)}
+.src-user-head{display:flex;align-items:center;gap:14px;padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:14px;flex-wrap:wrap}
+.src-user-avatar{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,var(--gold),var(--amber));font-size:20px;flex-shrink:0}
+.src-user-name{font-weight:700;font-size:16px;letter-spacing:-.3px}
+.src-user-id{font-size:12px;color:var(--mute);font-family:var(--mono);margin-top:2px}
+.src-user-badges{margin-left:auto}
+.src-user-body{display:grid;gap:12px}
+.src-script{padding:14px;border:1px solid var(--line);border-radius:12px;background:#0e0c0a}
+.src-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start}
+.src-title{font-weight:700;font-size:15px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.src-meta{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mute);font-family:var(--mono);margin-top:8px}
+.src-act{display:flex;gap:8px;flex-wrap:wrap}
+.src-pre{margin-top:12px;max-height:420px;overflow:auto;font-size:12px;line-height:1.55}
+@media(max-width:700px){
+  .src-head{flex-direction:column}
+  .src-act{width:100%}
+  .src-act .btn{flex:1}
+  .src-user-badges{margin-left:0}
+}
+</style>
+
+<script>
+async function viewSource(id, btn){
+  var pre = document.getElementById('src-' + id);
+  if (pre.style.display === 'block') {
+    pre.style.display = 'none';
+    btn.textContent = '👁️ View Source';
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = '⏳ Loading...';
+  pre.style.display = 'block';
+  pre.textContent = '// Loading source...';
+  try {
+    var r = await fetch('/api/scripts/' + id + '/source/admin');
+    if (!r.ok) {
+      pre.textContent = '// Failed to load source (HTTP ' + r.status + ')';
+      btn.disabled = false;
+      btn.textContent = '👁️ View Source';
+      return;
+    }
+    var d = await r.json();
+    pre.textContent = d.source || '// Empty source';
+    btn.disabled = false;
+    btn.textContent = '🙈 Hide Source';
+  } catch (e) {
+    pre.textContent = '// Error: ' + e.message;
+    btn.disabled = false;
+    btn.textContent = '👁️ View Source';
+  }
+}
+
+function copyLoader(url){
+  copyText('loadstring(game:HttpGet("' + url + '"))()');
+}
+
+document.getElementById('srcSearch').addEventListener('input', function(e){
+  var q = e.target.value.toLowerCase().trim();
+  document.querySelectorAll('.src-user').forEach(function(card){
+    var text = card.textContent.toLowerCase();
+    card.style.display = (!q || text.includes(q)) ? '' : 'none';
+  });
+});
+</script>`;
+
+  res.send(page({
+    req,
+    title: "Kingmor — Player Source",
+    active: "sources",
+    body,
+  }));
+});
+
 // ==================== ADMIN PAGE ====================
 
 app.get("/admin/dashboard", isAdmin, (req, res) => {
@@ -1627,15 +1844,6 @@ app.get("/admin/dashboard", isAdmin, (req, res) => {
   const keys = readKeys();
   const premium = readPremium();
   const pkeys = readPremiumKeys();
-
-  // Group scripts per user
-  const grouped = {};
-  for (const s of db) {
-    if (!grouped[s.ownerId]) {
-      grouped[s.ownerId] = { ownerId: s.ownerId, ownerUsername: s.ownerUsername, scripts: [] };
-    }
-    grouped[s.ownerId].scripts.push(s);
-  }
 
   const rows = [
     ["Total scripts", db.length],
@@ -1646,61 +1854,15 @@ app.get("/admin/dashboard", isAdmin, (req, res) => {
     ["Premium keys (unused)", pkeys.filter((k) => !k.redeemedBy).length],
     ["Premium keys (redeemed)", pkeys.filter((k) => k.redeemedBy).length],
   ];
-
-  const userBlocks = Object.values(grouped).map(u => {
-    const scriptList = u.scripts.map(s => `
-      <div style="margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:10px;background:#0e0c0a">
-        <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">
-          <b>${escapeHtml(s.name)}</b>
-          <span style="color:${s.enabled ? "var(--ok)" : "var(--bad)"};font-size:12px">${s.enabled ? "● Enabled" : "● Disabled"}</span>
-        </div>
-        <div style="font-size:11px;color:var(--mute);font-family:var(--mono);margin-top:4px">ID: ${s.id}</div>
-        <button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="viewSource('${s.id}')">View source</button>
-        <pre id="src-${s.id}" class="code" style="display:none;max-height:400px;overflow:auto;margin-top:10px"></pre>
-      </div>
-    `).join("");
-    return `
-      <div style="margin-top:24px;padding:18px;border:1px solid var(--line2);border-radius:14px">
-        <h3 style="font-size:15px">👤 ${escapeHtml(u.ownerUsername || "Unknown")} <span style="color:var(--mute);font-size:12px">(${u.ownerId})</span></h3>
-        <div style="color:var(--mute);font-size:12px">${u.scripts.length} script(s)</div>
-        ${scriptList}
-      </div>
-    `;
-  }).join("");
-
-  const body = `<main class="wrap" style="padding-bottom:40px">
-    <div class="page-head">
-      <h1>Admin overview</h1>
-      <p>Only admin (ID: ${ADMIN_USER_ID}) can access this page.</p>
+  const body = `<main class="wrap center"><div class="card" style="width:min(560px,100%)">
+    <h1>Admin overview</h1>
+    <div class="kv">${rows.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join("")}</div>
+    <div class="stack">
+      <a class="btn btn-gold btn-block" href="/admin/sources">🕵️ Player Source</a>
+      <a class="btn btn-ghost btn-block" href="/dashboard">Back to dashboard</a>
     </div>
-    <div class="stats" style="margin-top:0">
-      ${rows.map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join("")}
-    </div>
-
-    <div class="h-row"><h2>All users & scripts</h2><div class="ln"></div></div>
-    ${userBlocks || `<div class="empty">No scripts uploaded yet.</div>`}
-
-    <div class="stack" style="margin-top:24px;display:flex;gap:10px;flex-wrap:wrap">
-      <a class="btn btn-gold" href="/dashboard">Back to dashboard</a>
-    </div>
-  </main>
-
-  <script>
-  async function viewSource(id){
-    var pre=document.getElementById('src-'+id);
-    if(pre.style.display==='block'){pre.style.display='none';return;}
-    pre.style.display='block';
-    pre.textContent='Loading...';
-    try{
-      var r=await fetch('/api/admin/scripts');
-      var arr=await r.json();
-      var found=arr.find(function(x){return x.id===id});
-      pre.textContent=found && found.source ? found.source : '// Source not found';
-    }catch(e){pre.textContent='// Failed to load source';}
-  }
-  </script>`;
-
-  res.send(page({ req, title: "Kingmor — Admin", active: "", body, bare: false }));
+  </div></main>`;
+  res.send(page({ req, title: "Kingmor — Admin", active: "admin", body, bare: true }));
 });
 
 // ==================== HEALTH CHECK ====================
