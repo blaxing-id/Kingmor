@@ -596,11 +596,8 @@ app.get("/api/scripts/:id/source", requireAuth, (req, res) => {
   });
 });
 
-// ⭐ Admin bisa lihat source asli user manapun
+// Admin bisa lihat source asli user manapun
 app.get("/api/scripts/:id/source/admin", (req, res) => {
-  // Bisa diakses via 2 cara:
-  // 1. Session admin (dari web)
-  // 2. Header x-api-secret + x-requester-id (dari API)
   const sessionAdmin = req.session && req.session.user && req.session.user.id === ADMIN_USER_ID;
   const headerAdmin = (() => {
     const provided = req.headers["x-requester-id"];
@@ -632,6 +629,33 @@ app.get("/api/scripts/:id/source/admin", (req, res) => {
     updatedAt: script.updatedAt,
     source: fs.readFileSync(filepath, "utf8"),
   });
+});
+
+// Admin download source as .lua file
+app.get("/api/scripts/:id/source/admin/download", (req, res) => {
+  const sessionAdmin = req.session && req.session.user && req.session.user.id === ADMIN_USER_ID;
+  const headerAdmin = (() => {
+    const provided = req.headers["x-requester-id"];
+    const secret = req.headers["x-api-secret"];
+    if (String(provided) !== ADMIN_USER_ID) return false;
+    if (!secret) return false;
+    const a = Buffer.from(String(secret));
+    const b = Buffer.from(API_SECRET);
+    if (a.length !== b.length) return false;
+    try { return crypto.timingSafeEqual(a, b); } catch { return false; }
+  })();
+  if (!sessionAdmin && !headerAdmin) {
+    return res.status(403).json({ error: "Forbidden — admin only" });
+  }
+  const db = readDB();
+  const script = db.find((s) => s.id === req.params.id);
+  if (!script) return res.status(404).json({ error: "Script not found" });
+  const filepath = path.join(SCRIPTS_DIR, script.filename);
+  if (!fs.existsSync(filepath)) return res.status(404).json({ error: "Source file missing" });
+  const safeName = String(script.name || script.id).replace(/[^a-zA-Z0-9._-]+/g, "_");
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${safeName}.lua"`);
+  return res.sendFile(path.resolve(filepath));
 });
 
 app.post("/api/scripts", requireAuth, (req, res) => {
@@ -1658,7 +1682,6 @@ app.get("/admin/sources", isAdmin, (req, res) => {
   const keys = readKeys();
   const base = getBaseUrl(req);
 
-  // Group scripts per user
   const grouped = {};
   for (const s of db) {
     if (!grouped[s.ownerId]) {
@@ -1707,8 +1730,9 @@ app.get("/admin/sources", isAdmin, (req, res) => {
               </div>
             </div>
             <div class="src-act">
-              <button class="btn btn-ghost btn-sm" onclick="viewSource('${s.id}', this)">👁️ View Source</button>
-              <button class="btn btn-ghost btn-sm" onclick="copyLoader('${escapeHtml(base)}/api/loader/${s.id}.lua')">📋 Loader</button>
+              <button class="btn btn-ghost btn-sm" onclick="viewSource('${s.id}', this)">View Source</button>
+              <button class="btn btn-ghost btn-sm" onclick="downloadSource('${s.id}', ${JSON.stringify(s.name)})">Download</button>
+              <button class="btn btn-ghost btn-sm" onclick="copyLoader('${escapeHtml(base)}/api/loader/${s.id}.lua')">Loader</button>
             </div>
           </div>
           <pre id="src-${s.id}" class="code src-pre" style="display:none"></pre>
@@ -1737,7 +1761,7 @@ app.get("/admin/sources", isAdmin, (req, res) => {
 <main class="wrap" style="padding-bottom:60px">
   <div class="page-head">
     <h1>🕵️ Player Source</h1>
-    <p>Lihat source Lua asli dari semua user yang upload di Kingmor. Halaman ini khusus admin.</p>
+    <p>Lihat dan download source Lua asli dari semua user yang upload di Kingmor. Halaman ini khusus admin.</p>
   </div>
 
   <div class="stats" style="margin-top:0">
@@ -1751,7 +1775,7 @@ app.get("/admin/sources", isAdmin, (req, res) => {
     <h2>Search</h2>
     <div class="ln"></div>
   </div>
-  <input id="srcSearch" placeholder="🔍 Cari nama user atau nama script..." style="margin-bottom:20px">
+  <input id="srcSearch" placeholder="Cari nama user atau nama script..." style="margin-bottom:20px">
 
   <div class="h-row">
     <h2>All players</h2>
@@ -1790,11 +1814,11 @@ async function viewSource(id, btn){
   var pre = document.getElementById('src-' + id);
   if (pre.style.display === 'block') {
     pre.style.display = 'none';
-    btn.textContent = '👁️ View Source';
+    btn.textContent = 'View Source';
     return;
   }
   btn.disabled = true;
-  btn.textContent = '⏳ Loading...';
+  btn.textContent = 'Loading...';
   pre.style.display = 'block';
   pre.textContent = '// Loading source...';
   try {
@@ -1802,17 +1826,40 @@ async function viewSource(id, btn){
     if (!r.ok) {
       pre.textContent = '// Failed to load source (HTTP ' + r.status + ')';
       btn.disabled = false;
-      btn.textContent = '👁️ View Source';
+      btn.textContent = 'View Source';
       return;
     }
     var d = await r.json();
     pre.textContent = d.source || '// Empty source';
     btn.disabled = false;
-    btn.textContent = '🙈 Hide Source';
+    btn.textContent = 'Hide Source';
   } catch (e) {
     pre.textContent = '// Error: ' + e.message;
     btn.disabled = false;
-    btn.textContent = '👁️ View Source';
+    btn.textContent = 'View Source';
+  }
+}
+
+async function downloadSource(id, name) {
+  try {
+    var r = await fetch('/api/scripts/' + id + '/source/admin');
+    if (!r.ok) {
+      toast('Failed to download source (HTTP ' + r.status + ')', 'err');
+      return;
+    }
+    var d = await r.json();
+    var blob = new Blob([d.source || ''], { type: 'text/plain;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    var safeName = (name || id || 'script').replace(/[^a-zA-Z0-9._-]+/g, '_');
+    a.download = safeName + '.lua';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+    toast('Downloaded ' + safeName + '.lua', 'ok');
+  } catch (e) {
+    toast('Download error: ' + e.message, 'err');
   }
 }
 
