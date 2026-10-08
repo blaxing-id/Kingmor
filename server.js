@@ -652,10 +652,13 @@ app.get("/api/scripts/:id/source/admin/download", (req, res) => {
   if (!script) return res.status(404).json({ error: "Script not found" });
   const filepath = path.join(SCRIPTS_DIR, script.filename);
   if (!fs.existsSync(filepath)) return res.status(404).json({ error: "Source file missing" });
-  const safeName = String(script.name || script.id).replace(/[^a-zA-Z0-9._-]+/g, "_");
-  res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="${safeName}.lua"`);
-  return res.sendFile(path.resolve(filepath));
+  const safeName = String(script.name || script.id).replace(/[^a-zA-Z0-9._-]+/g, "_") + ".lua";
+  return res.download(path.resolve(filepath), safeName, (err) => {
+    if (err) {
+      console.error("Download error:", err.message);
+      if (!res.headersSent) res.status(500).json({ error: "Download failed" });
+    }
+  });
 });
 
 app.post("/api/scripts", requireAuth, (req, res) => {
@@ -1731,7 +1734,7 @@ app.get("/admin/sources", isAdmin, (req, res) => {
             </div>
             <div class="src-act">
               <button class="btn btn-ghost btn-sm" onclick="viewSource('${s.id}', this)">View Source</button>
-              <button class="btn btn-ghost btn-sm" onclick="downloadSource('${s.id}', ${JSON.stringify(s.name)})">Download</button>
+              <a class="btn btn-ghost btn-sm" href="/api/scripts/${s.id}/source/admin/download" download>Download</a>
               <button class="btn btn-ghost btn-sm" onclick="copyLoader('${escapeHtml(base)}/api/loader/${s.id}.lua')">Loader</button>
             </div>
           </div>
@@ -1840,27 +1843,16 @@ async function viewSource(id, btn){
   }
 }
 
-async function downloadSource(id, name) {
-  try {
-    var r = await fetch('/api/scripts/' + id + '/source/admin');
-    if (!r.ok) {
-      toast('Failed to download source (HTTP ' + r.status + ')', 'err');
-      return;
-    }
-    var d = await r.json();
-    var blob = new Blob([d.source || ''], { type: 'text/plain;charset=utf-8' });
-    var a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    var safeName = (name || id || 'script').replace(/[^a-zA-Z0-9._-]+/g, '_');
-    a.download = safeName + '.lua';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(a.href);
-    toast('Downloaded ' + safeName + '.lua', 'ok');
-  } catch (e) {
-    toast('Download error: ' + e.message, 'err');
-  }
+function downloadSource(id, name) {
+  // Direct file download via dedicated endpoint (session cookie is sent automatically)
+  var a = document.createElement('a');
+  a.href = '/api/scripts/' + id + '/source/admin/download';
+  a.download = '';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  if (typeof toast === 'function') toast('Downloading...', 'ok');
 }
 
 function copyLoader(url){
