@@ -347,7 +347,7 @@ const createExtras = function createExtras(ctx) {
     const allowed =
       String(scriptInfo.ownerId) === String(interaction.user.id) ||
       (panel && panel.scriptId === scriptId);
-    if (!allowed) return "❌ You can only whitelist for your own scripts.";
+    if (!allowed) return "❌ You can only whitelist for your own scripts or this server's panel script.";
 
     const keys = readKeys();
     const expiry = days === 0 ? null : new Date(Date.now() + days * 86400000).toISOString();
@@ -490,17 +490,21 @@ const createExtras = function createExtras(ctx) {
         const targetType = targetUser ? "user" : "role";
         const targetId = targetUser ? targetUser.id : targetRole.id;
 
-        let candidates = await getScriptsByOwner(interaction.user.id);
+        // Prefer guild panel script so whitelist-role staff can whitelist
+        // for the script owned by the panel owner (not only their own scripts).
+        let candidates = [];
+        const panel = getGuildPanelScript(interaction.guildId);
+        if (panel && panel.scriptId) {
+          const info = await fetchScriptById(panel.scriptId);
+          if (info) candidates = [info];
+        }
+        // Fallback: if no panel in this guild, use the command user's own scripts
         if (candidates.length === 0) {
-          const panel = getGuildPanelScript(interaction.guildId);
-          if (panel) {
-            const info = await fetchScriptById(panel.scriptId);
-            if (info) candidates = [info];
-          }
+          candidates = await getScriptsByOwner(interaction.user.id);
         }
         if (candidates.length === 0) {
           await interaction.editReply({
-            content: "❌ You don't have any scripts, and this server has no script panel.\nUpload a script on the website, then run `/setuppanel`."
+            content: "❌ This server has no script panel, and you don't have any scripts.\nThe panel owner should run `/setuppanel` first, or upload a script on the website."
           }).catch(() => {});
           return true;
         }
