@@ -914,20 +914,34 @@ app.get("/api/panels/count", requireInternalSecret, (req, res) => {
   if (!ownerId) return res.status(400).json({ error: "ownerId required" });
   const botConfig = readBotConfig();
   let count = 0;
+  const seen = new Set();
   for (const guildId of Object.keys(botConfig)) {
     const g = botConfig[guildId];
-    if (g && String(g.panelOwnerId) === String(ownerId) && g.panelScriptId) {
+    if (!g) continue;
+    if (g.panels && typeof g.panels === "object") {
+      for (const sid of Object.keys(g.panels)) {
+        const p = g.panels[sid];
+        if (p && String(p.ownerId) === String(ownerId) && !seen.has(sid)) {
+          seen.add(sid);
+          count++;
+        }
+      }
+    } else if (g.panelScriptId && String(g.panelOwnerId) === String(ownerId) && !seen.has(g.panelScriptId)) {
+      seen.add(g.panelScriptId);
       count++;
     }
   }
   const premium = isPremium(ownerId);
   const max = premium ? 10 : 2;
-  // Optional: guildId query — if this guild already has a panel owned by user, replacing is free
+  // Optional: guildId + scriptId — replacing panel for the SAME script is free
   const guildId = req.query.guildId ? String(req.query.guildId) : null;
+  const scriptId = req.query.scriptId ? String(req.query.scriptId) : null;
   let replacing = false;
-  if (guildId && botConfig[guildId]) {
+  if (guildId && botConfig[guildId] && scriptId) {
     const g = botConfig[guildId];
-    if (g && String(g.panelOwnerId) === String(ownerId) && g.panelScriptId) {
+    if (g.panels && g.panels[scriptId] && String(g.panels[scriptId].ownerId) === String(ownerId)) {
+      replacing = true;
+    } else if (g.panelScriptId === scriptId && String(g.panelOwnerId) === String(ownerId)) {
       replacing = true;
     }
   }
