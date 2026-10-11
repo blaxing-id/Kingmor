@@ -1273,8 +1273,20 @@ app.get("/api/loader/:id.lua", (req, res) => {
   const db = readDB();
   const script = db.find((x) => x.id === scriptId);
 
+  function sendLua(body, status = 200) {
+    const text = typeof body === "string" ? body : String(body);
+    res.status(status);
+    res.set({
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store, no-cache, must-revalidate",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Length": Buffer.byteLength(text, "utf8"),
+    });
+    return res.end(text, "utf8");
+  }
+
   if (!script) {
-    return res.status(404).type("text/plain").send("-- Kingmor: Script not found");
+    return sendLua("-- Kingmor: Script not found", 404);
   }
 
   const botConfig = readBotConfig();
@@ -1290,69 +1302,16 @@ end
 return`;
   }
 
-  function buildHwidWrapper(sourceCode, keyValue, freeModeFlag) {
-    if (freeModeFlag) {
-      return `-- Kingmor Protection System
-local _km_HttpService = game:GetService("HttpService")
-local _km_Players = game:GetService("Players")
-local _km_lp = _km_Players.LocalPlayer
-
-local _km_hwid = ""
-local _km_ok, _km_id = pcall(function()
-    return game:GetService("RbxAnalyticsService"):GetClientId()
-end)
-if _km_ok then _km_hwid = tostring(_km_id) end
-
-pcall(function()
-    game:HttpGet("${base}/api/hwid/check?scriptId=${scriptId}&hwid=" .. _km_hwid)
-end)
-
--- User script
-${sourceCode}`;
-    }
-
-    return `-- Kingmor Protection System
-local _km_HttpService = game:GetService("HttpService")
-local _km_Players = game:GetService("Players")
-local _km_lp = _km_Players.LocalPlayer
-
-local _km_hwid = ""
-local _km_ok, _km_id = pcall(function()
-    return game:GetService("RbxAnalyticsService"):GetClientId()
-end)
-if _km_ok then _km_hwid = tostring(_km_id) end
-
-local _km_key = "${keyValue}"
-local _km_checkUrl = "${base}/api/hwid/check?scriptId=${scriptId}&key=" .. _km_key .. "&hwid=" .. _km_hwid
-
-local _km_success, _km_body = pcall(function()
-    return game:HttpGet(_km_checkUrl)
-end)
-
-if not _km_success or not _km_body then
-    _km_lp:Kick("[Kingmor] HWID Check Failed")
-    return
-end
-
-local _km_data = _km_HttpService:JSONDecode(_km_body)
-if not _km_data or not _km_data.valid then
-    local _km_reason = (type(_km_data) == "table" and _km_data.reason) or "Invalid Key"
-    _km_lp:Kick("[Kingmor] " .. _km_reason)
-    return
-end
-
--- User script
-${sourceCode}`;
-  }
+  // Chunk size under common executor HttpGet limits (~1MB). Scripts larger
+  // than CHUNK_THRESHOLD are delivered via a tiny bootstrap that fetches parts.
+  const CHUNK_THRESHOLD = 350 * 1024;
+  const CHUNK_SIZE = 300 * 1024;
 
   const userAgent = (req.headers["user-agent"] || "").toLowerCase();
   const accept = (req.headers.accept || "").toLowerCase();
   const hasKey = typeof req.query.key === "string";
   const hasUid = typeof req.query.uid === "string";
-  // Many executors send empty/generic UA — treat as loader when:
-  // - key/uid query is present, OR
-  // - Accept is not browser HTML, OR
-  // - known executor UA
+  const isChunkReq = typeof req.query.chunk === "string";
   const isKnownExecutor = userAgent.includes("roblox") || userAgent.includes("lua")
     || userAgent.includes("synapse") || userAgent.includes("krnl")
     || userAgent.includes("fluxus") || userAgent.includes("hydrogen")
@@ -1361,63 +1320,157 @@ ${sourceCode}`;
     || userAgent.includes("xeno") || userAgent.includes("seliware")
     || userAgent.includes("delta") || userAgent.includes("codex")
     || userAgent.includes("executor") || userAgent.includes("httpget");
-  const isBrowserNav = accept.includes("text/html") && !hasKey && !hasUid && !req.query.raw;
-  const isLoaderRequest = !isBrowserNav || isKnownExecutor || hasKey || hasUid || req.query.raw === "1";
+  const isBrowserNav = accept.includes("text/html") && !hasKey && !hasUid && !isChunkReq && !req.query.raw;
+  const isLoaderRequest = !isBrowserNav || isKnownExecutor || hasKey || hasUid || isChunkReq || req.query.raw === "1";
 
-  if (isLoaderRequest) {
-    if (!script.enabled) {
-      return res.status(200).type("text/plain").set("Cache-Control", "no-store")
-        .send(kickPlayer("Script Disabled"));
-    }
-
-    const fp = path.join(SCRIPTS_DIR, script.filename);
-    if (!fs.existsSync(fp)) {
-      return res.status(200).type("text/plain").set("Cache-Control", "no-store")
-        .send(kickPlayer("Source Missing"));
-    }
-
-    const sourceCode = fs.readFileSync(fp, "utf8");
-
-    if (isFreeMode) {
-      const wrapped = buildHwidWrapper(sourceCode, "", true);
-      res.status(200);
-      res.set({
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": "no-store, no-cache, must-revalidate",
-        "Content-Length": Buffer.byteLength(wrapped, "utf8"),
-      });
-      return res.end(wrapped, "utf8");
-    }
-
-    const providedKey = (req.query.key || "").toLowerCase().trim();
-    if (!providedKey) {
-      return res.status(200).type("text/plain").set("Cache-Control", "no-store")
-        .send(kickPlayer("No Key Provided"));
-    }
-
+  function validateKey(providedKey) {
+    if (isFreeMode) return { ok: true };
+    if (!providedKey) return { ok: false, reason: "No Key Provided" };
     const allKeys = readKeys();
     const keyData = allKeys.find(k => k.key === providedKey && k.scriptId === scriptId);
-
-    if (!keyData) {
-      return res.status(200).type("text/plain").set("Cache-Control", "no-store")
-        .send(kickPlayer("Invalid Key"));
-    }
-
-    if (keyData.expiry && new Date(keyData.expiry) < new Date()) {
-      return res.status(200).type("text/plain").set("Cache-Control", "no-store")
-        .send(kickPlayer("Key Expired"));
-    }
-
-    const wrapped = buildHwidWrapper(sourceCode, providedKey, false);
-    res.status(200);
-    res.set({
-      "Content-Type": "text/plain; charset=utf-8",
-      "Cache-Control": "no-store, no-cache, must-revalidate",
-      "Content-Length": Buffer.byteLength(wrapped, "utf8"),
-    });
-    return res.end(wrapped, "utf8");
+    if (!keyData) return { ok: false, reason: "Invalid Key" };
+    if (keyData.expiry && new Date(keyData.expiry) < new Date()) return { ok: false, reason: "Key Expired" };
+    return { ok: true, keyData };
   }
 
+  function buildBootstrap(sourceLen, keyValue, freeModeFlag) {
+    const parts = Math.max(1, Math.ceil(sourceLen / CHUNK_SIZE));
+    const keyLua = freeModeFlag ? "" : String(keyValue || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    return `-- Kingmor chunked loader (${parts} parts, ${sourceLen} bytes)
+local _km_HttpService = game:GetService("HttpService")
+local _km_Players = game:GetService("Players")
+local _km_lp = _km_Players.LocalPlayer
+local _km_hwid = ""
+do
+  local ok, id = pcall(function()
+    return game:GetService("RbxAnalyticsService"):GetClientId()
+  end)
+  if ok then _km_hwid = tostring(id) end
+end
+${freeModeFlag ? `pcall(function()
+  game:HttpGet("${base}/api/hwid/check?scriptId=${scriptId}&hwid=" .. _km_hwid)
+end)` : `local _km_key = "${keyLua}"
+local _km_checkUrl = "${base}/api/hwid/check?scriptId=${scriptId}&key=" .. _km_key .. "&hwid=" .. _km_hwid
+local _km_ok, _km_body = pcall(function()
+  return game:HttpGet(_km_checkUrl)
+end)
+if not _km_ok or not _km_body then
+  if _km_lp then _km_lp:Kick("[Kingmor] HWID Check Failed") end
+  return
+end
+local _km_data = nil
+pcall(function() _km_data = _km_HttpService:JSONDecode(_km_body) end)
+if not _km_data or not _km_data.valid then
+  local reason = (type(_km_data) == "table" and _km_data.reason) or "Invalid Key"
+  if _km_lp then _km_lp:Kick("[Kingmor] " .. tostring(reason)) end
+  return
+end`}
+local _km_parts = ${parts}
+local _km_buf = {}
+for _km_i = 1, _km_parts do
+  local _km_url = "${base}/api/loader/${scriptId}.lua?chunk=" .. tostring(_km_i) .. "&parts=" .. tostring(_km_parts)${freeModeFlag ? "" : ` .. "&key=" .. _km_key`}
+  local _km_ok2, _km_chunk = pcall(function()
+    return game:HttpGet(_km_url)
+  end)
+  if not _km_ok2 or type(_km_chunk) ~= "string" or #_km_chunk == 0 then
+    if _km_lp then _km_lp:Kick("[Kingmor] Failed to download script part " .. tostring(_km_i)) end
+    return
+  end
+  if string.sub(_km_chunk, 1, 10) == "-- Kingmor" and string.find(_km_chunk, "Kick", 1, true) then
+    local fn, err = loadstring(_km_chunk)
+    if fn then fn() end
+    return
+  end
+  _km_buf[_km_i] = _km_chunk
+end
+local _km_src = table.concat(_km_buf)
+local _km_fn, _km_err = loadstring(_km_src)
+if not _km_fn then
+  if _km_lp then _km_lp:Kick("[Kingmor] Script compile error") end
+  warn("[Kingmor] compile error:", _km_err)
+  return
+end
+_km_fn()`;
+  }
+
+  function buildInlineWrapper(sourceCode, keyValue, freeModeFlag) {
+    if (freeModeFlag) {
+      return `-- Kingmor Protection System
+local _km_hwid = ""
+pcall(function()
+  _km_hwid = tostring(game:GetService("RbxAnalyticsService"):GetClientId())
+end)
+pcall(function()
+  game:HttpGet("${base}/api/hwid/check?scriptId=${scriptId}&hwid=" .. _km_hwid)
+end)
+
+-- User script
+${sourceCode}`;
+    }
+    const keyLua = String(keyValue || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    return `-- Kingmor Protection System
+local _km_HttpService = game:GetService("HttpService")
+local _km_Players = game:GetService("Players")
+local _km_lp = _km_Players.LocalPlayer
+local _km_hwid = ""
+pcall(function()
+  _km_hwid = tostring(game:GetService("RbxAnalyticsService"):GetClientId())
+end)
+local _km_key = "${keyLua}"
+local _km_ok, _km_body = pcall(function()
+  return game:HttpGet("${base}/api/hwid/check?scriptId=${scriptId}&key=" .. _km_key .. "&hwid=" .. _km_hwid)
+end)
+if not _km_ok or not _km_body then
+  if _km_lp then _km_lp:Kick("[Kingmor] HWID Check Failed") end
+  return
+end
+local _km_data = nil
+pcall(function() _km_data = _km_HttpService:JSONDecode(_km_body) end)
+if not _km_data or not _km_data.valid then
+  local reason = (type(_km_data) == "table" and _km_data.reason) or "Invalid Key"
+  if _km_lp then _km_lp:Kick("[Kingmor] " .. tostring(reason)) end
+  return
+end
+
+-- User script
+${sourceCode}`;
+  }
+
+  if (isLoaderRequest) {
+    if (!script.enabled) return sendLua(kickPlayer("Script Disabled"));
+
+    const fp = path.join(SCRIPTS_DIR, script.filename);
+    if (!fs.existsSync(fp)) return sendLua(kickPlayer("Source Missing"));
+
+    const sourceCode = fs.readFileSync(fp, "utf8");
+    const providedKey = (req.query.key || "").toLowerCase().trim();
+
+    // ----- Chunk part download (raw source slice only) -----
+    if (isChunkReq) {
+      const auth = validateKey(providedKey);
+      if (!auth.ok) return sendLua(kickPlayer(auth.reason));
+      const part = Math.max(1, parseInt(req.query.chunk, 10) || 1);
+      const startIdx = (part - 1) * CHUNK_SIZE;
+      if (startIdx >= sourceCode.length) return sendLua("");
+      const slice = sourceCode.slice(startIdx, startIdx + CHUNK_SIZE);
+      return sendLua(slice);
+    }
+
+    // ----- Full loader response -----
+    const auth = validateKey(providedKey);
+    if (!auth.ok) return sendLua(kickPlayer(auth.reason));
+
+    // Large scripts: bootstrap + chunks (avoids executor HttpGet size limits)
+    if (sourceCode.length > CHUNK_THRESHOLD) {
+      const boot = buildBootstrap(sourceCode.length, providedKey, isFreeMode);
+      return sendLua(boot);
+    }
+
+    // Small scripts: single response
+    return sendLua(buildInlineWrapper(sourceCode, providedKey, isFreeMode));
+  }
+
+  // Browser page (copy loader)
   const uid = req.query.uid || null;
   let userScriptKey = null;
   if (!isFreeMode && uid) {
@@ -1432,7 +1485,7 @@ ${sourceCode}`;
   const loaderDisplay = isFreeMode
     ? `loadstring(game:HttpGet("${base}/api/loader/${scriptId}.lua"))()`
     : userScriptKey
-      ? `script_key = "${userScriptKey}"\nloadstring(game:HttpGet("${base}/api/loader/${scriptId}.lua?key="..script_key))()`
+      ? `script_key="${userScriptKey}"\\nloadstring(game:HttpGet("${base}/api/loader/${scriptId}.lua?key="..script_key))()`
       : `loadstring(game:HttpGet("${base}/api/loader/${scriptId}.lua"))()`;
 
   return res.status(200).send(page({
@@ -1441,10 +1494,10 @@ ${sourceCode}`;
       <span class="badge prem">👑 Source protected</span>
       <h1 style="margin-top:14px">${escapeHtml(script.name)}</h1>
       <p>Copy the loader below and run it in your executor.</p>
-      <div class="code">${escapeHtml(loaderDisplay)}</div>
+      <div class="code">${escapeHtml(loaderDisplay.replace(/\\\\n/g, "\\n"))}</div>
       <div class="stack"><button class="btn btn-gold btn-block" onclick="copyText(LOADER)">Copy loader</button></div>
     </div></main>`,
-    script: `var LOADER=${JSON.stringify(loaderDisplay)};`,
+    script: `var LOADER=${JSON.stringify(loaderDisplay.replace(/\\n/g, "\n").replace(/\\\\n/g, "\n"))};`,
   }));
 });
 
