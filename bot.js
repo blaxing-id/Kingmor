@@ -170,19 +170,33 @@ function formatDuration(ms) {
 }
 
 // ==================== BLACKLIST HELPERS ====================
-function isBlacklisted(userId) {
-  return readBlacklist().some(b => b.type !== "role" && String(b.userId) === String(userId));
+function isBlacklisted(userId, scriptId = null) {
+  return readBlacklist().some(b => {
+    if (b.type === "role") return false;
+    if (String(b.userId) !== String(userId)) return false;
+    // Legacy global blacklist (no scriptId) blocks all scripts
+    if (!b.scriptId) return true;
+    // Per-script blacklist
+    if (scriptId && String(b.scriptId) === String(scriptId)) return true;
+    return false;
+  });
 }
-function isRoleBlacklisted(roleId) {
-  return readBlacklist().some(b => b.type === "role" && String(b.roleId) === String(roleId));
+function isRoleBlacklisted(roleId, scriptId = null) {
+  return readBlacklist().some(b => {
+    if (b.type !== "role") return false;
+    if (String(b.roleId) !== String(roleId)) return false;
+    if (!b.scriptId) return true;
+    if (scriptId && String(b.scriptId) === String(scriptId)) return true;
+    return false;
+  });
 }
-async function checkUserBlacklisted(interaction) {
-  if (isBlacklisted(interaction.user.id)) return "user";
+async function checkUserBlacklisted(interaction, scriptId = null) {
+  if (isBlacklisted(interaction.user.id, scriptId)) return "user";
   if (!interaction.guild) return null;
   try {
     const member = await interaction.guild.members.fetch(interaction.user.id);
     for (const roleId of member.roles.cache.keys()) {
-      if (isRoleBlacklisted(roleId)) return roleId;
+      if (isRoleBlacklisted(roleId, scriptId)) return roleId;
     }
   } catch {}
   return null;
@@ -221,11 +235,60 @@ function validateRoleOption(interaction, role, { allowEveryone = false } = {}) {
 }
 
 function getGuildPanelScript(guildId) {
+  // Legacy single-panel helper (first panel found)
   const cfg = readConfig()[guildId] || {};
+  if (cfg.panels && typeof cfg.panels === "object") {
+    const ids = Object.keys(cfg.panels);
+    if (ids.length > 0) {
+      const sid = ids[0];
+      const p = cfg.panels[sid];
+      return { scriptId: sid, ownerId: p.ownerId || null, channelId: p.channelId || null };
+    }
+  }
   const scriptId = cfg.panelScriptId;
   const ownerId = cfg.panelOwnerId;
   if (!scriptId) return null;
-  return { scriptId, ownerId: ownerId || null };
+  return { scriptId, ownerId: ownerId || null, channelId: cfg.panelChannelId || null };
+}
+
+/** Find panel for a specific script across all guilds. Returns { guildId, channelId, ownerId, scriptId } or null */
+function findPanelForScript(scriptId) {
+  const cfg = readConfig();
+  for (const guildId of Object.keys(cfg)) {
+    const g = cfg[guildId];
+    if (!g) continue;
+    if (g.panels && g.panels[scriptId]) {
+      const p = g.panels[scriptId];
+      return { guildId, scriptId, channelId: p.channelId, ownerId: p.ownerId || null };
+    }
+    // Legacy single panel
+    if (g.panelScriptId === scriptId && g.panelChannelId) {
+      return { guildId, scriptId, channelId: g.panelChannelId, ownerId: g.panelOwnerId || null };
+    }
+  }
+  return null;
+}
+
+/** Does this script have a panel set up anywhere? */
+function scriptHasPanel(scriptId) {
+  return !!findPanelForScript(scriptId);
+}
+
+/** Save / update a panel for a script in a guild */
+function savePanel(guildId, scriptId, channelId, ownerId) {
+  const cfg = readConfig();
+  if (!cfg[guildId]) cfg[guildId] = {};
+  if (!cfg[guildId].panels) cfg[guildId].panels = {};
+  cfg[guildId].panels[scriptId] = {
+    channelId: String(channelId),
+    ownerId: String(ownerId),
+    updatedAt: new Date().toISOString()
+  };
+  // Keep legacy fields in sync with the latest panel (backwards compatible)
+  cfg[guildId].panelScriptId = String(scriptId);
+  cfg[guildId].panelChannelId = String(channelId);
+  cfg[guildId].panelOwnerId = String(ownerId);
+  writeConfig(cfg);
 }
 
 function describeAxiosError(err) {
@@ -277,10 +340,11 @@ function clearCache(ownerId) {
 }
 
 // ==================== PANEL LIMIT HELPER ====================
-async function checkPanelLimit(ownerId, guildId = null) {
+async function checkPanelLimit(ownerId, guildId = null, scriptId = null) {
   try {
     const params = { ownerId };
     if (guildId) params.guildId = guildId;
+    if (scriptId) params.scriptId = scriptId;
     const res = await axios.get(`${CONFIG.apiBase}/api/panels/count`, {
       headers: internalHeaders, params, timeout: 8000
     });
@@ -289,9 +353,22 @@ async function checkPanelLimit(ownerId, guildId = null) {
     console.error(`❌ checkPanelLimit failed: ${describeAxiosError(err)}`);
     const cfg = readConfig();
     let count = 0;
+    const seen = new Set();
     for (const gid of Object.keys(cfg)) {
       const g = cfg[gid];
-      if (g && String(g.panelOwnerId) === String(ownerId) && g.panelScriptId) count++;
+      if (!g) continue;
+      if (g.panels && typeof g.panels === "object") {
+        for (const sid of Object.keys(g.panels)) {
+          const p = g.panels[sid];
+          if (p && String(p.ownerId) === String(ownerId) && !seen.has(sid)) {
+            seen.add(sid);
+            count++;
+          }
+        }
+      } else if (g.panelScriptId && String(g.panelOwnerId) === String(ownerId) && !seen.has(g.panelScriptId)) {
+        seen.add(g.panelScriptId);
+        count++;
+      }
     }
     const premium = isPremiumLocal(ownerId);
     const max = premium ? 10 : 2;
@@ -384,34 +461,51 @@ const createExtras = function createExtras(ctx) {
   // ⭐ UPDATED: Whitelist publik dengan ping user/role + link panel
   async function doWhitelist(interaction, { targetType, targetId, days, scriptId }) {
     const scriptInfo = await fetchScriptById(scriptId);
-    if (!scriptInfo) return "❌ That script no longer exists.";
+    if (!scriptInfo) return { ok: false, ephemeral: "❌ That script no longer exists." };
 
-    const panel = getGuildPanelScript(interaction.guildId);
-    const allowed =
-      String(scriptInfo.ownerId) === String(interaction.user.id) ||
-      (panel && panel.scriptId === scriptId);
-    if (!allowed) return "❌ You can only whitelist for your own scripts or this server's panel script.";
+    // Must own the script (or be staff with panel permission - still require panel on script)
+    const owns = String(scriptInfo.ownerId) === String(interaction.user.id);
+    if (!owns && !hasPermission(interaction.member, interaction.guildId)) {
+      return { ok: false, ephemeral: "❌ You can only whitelist for your own scripts." };
+    }
+
+    // Script MUST have a panel set up
+    const panelInfo = findPanelForScript(scriptId);
+    if (!panelInfo || !panelInfo.channelId) {
+      return {
+        ok: false,
+        ephemeral: `❌ **${scriptInfo.name}** has no panel yet.\nRun \`/setuppanel\` for this script first before whitelisting.`
+      };
+    }
 
     const keys = readKeys();
     const expiry = days === 0 ? null : new Date(Date.now() + days * 86400000).toISOString();
-    const cfg = readConfig()[interaction.guildId] || {};
-    const buyerRoleId = cfg.buyerRoles?.[scriptId] || cfg.buyerRole || null;
+    // buyer role from the guild where the panel lives (or current guild)
+    const cfgPanelGuild = readConfig()[panelInfo.guildId] || {};
+    const cfgHere = readConfig()[interaction.guildId] || {};
+    const buyerRoleId =
+      cfgPanelGuild.buyerRoles?.[scriptId] ||
+      cfgHere.buyerRoles?.[scriptId] ||
+      cfgPanelGuild.buyerRole ||
+      cfgHere.buyerRole ||
+      null;
+
     const hasActive = (uid) => keys.find(k =>
       String(k.userId) === String(uid) &&
       k.scriptId === scriptId &&
       !(k.expiry && new Date(k.expiry) < new Date())
     );
 
-    // Ambil channel panel untuk script ini (fallback ke channel tempat command dijalankan)
-    const panelChannelId = cfg.panelChannelId || interaction.channelId;
-    const panelMention = `<#${panelChannelId}>`;
-
-    // Format pesan whitelist publik: ping user/role dulu, lalu message
+    const panelMention = `<#${panelInfo.channelId}>`;
     const formatWhitelistMessage = (mention) =>
-      `${mention}\nYou have been whitelisted!\nYou can access the script via this message --> ${panelMention}`;
+      `${mention}\nYou have been whitelisted for **${scriptInfo.name}**!\nGet your script here → ${panelMention}`;
+
+    let publicMsg = null;
 
     if (targetType === "user") {
-      if (hasActive(targetId)) return `❌ <@${targetId}> already has access to **${scriptInfo.name}**.`;
+      if (hasActive(targetId)) {
+        return { ok: false, ephemeral: `❌ <@${targetId}> already has access to **${scriptInfo.name}**.` };
+      }
 
       let username = null;
       try { username = (await interaction.client.users.fetch(targetId)).username; } catch {}
@@ -426,44 +520,64 @@ const createExtras = function createExtras(ctx) {
 
       if (buyerRoleId) {
         try {
-          const member = await interaction.guild.members.fetch(targetId);
+          const guild = await interaction.client.guilds.fetch(panelInfo.guildId).catch(() => interaction.guild);
+          const member = await guild.members.fetch(targetId);
           await member.roles.add(buyerRoleId);
         } catch {}
       }
 
-      // Return pesan dengan ping user
-      return formatWhitelistMessage(`<@${targetId}>`);
-    }
-
-    // role
-    let role = null;
-    try {
-      role = await interaction.guild.roles.fetch(targetId);
-    } catch (e) {
-      return "❌ Role not found or invalid in this server.";
-    }
-    if (!role) return "❌ Role not found or invalid in this server.";
-    await interaction.guild.members.fetch();
-    const members = role.members.filter(m => !m.user.bot);
-    let added = 0, skipped = 0;
-
-    for (const [, member] of members) {
-      if (hasActive(member.id)) { skipped++; continue; }
-      keys.push({
-        key: generateKey(), hwid: null,
-        userId: String(member.id), username: member.user.username, scriptId,
-        redeemedAt: new Date().toISOString(), expiry,
-        createdAt: new Date().toISOString(), createdBy: interaction.user.id
-      });
-      added++;
-      if (buyerRoleId) {
-        try { await member.roles.add(buyerRoleId); } catch {}
+      publicMsg = formatWhitelistMessage(`<@${targetId}>`);
+    } else {
+      // role
+      let role = null;
+      try {
+        role = await interaction.guild.roles.fetch(targetId);
+      } catch (e) {
+        return { ok: false, ephemeral: "❌ Role not found or invalid in this server." };
       }
-    }
-    writeKeys(keys);
+      if (!role) return { ok: false, ephemeral: "❌ Role not found or invalid in this server." };
 
-    // Return pesan dengan ping role
-    return formatWhitelistMessage(`<@&${targetId}>`);
+      await interaction.guild.members.fetch().catch(() => {});
+      const members = role.members.filter(m => !m.user.bot);
+      let added = 0, skipped = 0;
+
+      for (const [, member] of members) {
+        if (hasActive(member.id)) { skipped++; continue; }
+        keys.push({
+          key: generateKey(), hwid: null,
+          userId: String(member.id), username: member.user.username, scriptId,
+          redeemedAt: new Date().toISOString(), expiry,
+          createdAt: new Date().toISOString(), createdBy: interaction.user.id
+        });
+        added++;
+        if (buyerRoleId) {
+          try { await member.roles.add(buyerRoleId); } catch {}
+        }
+      }
+      writeKeys(keys);
+      publicMsg = formatWhitelistMessage(`<@&${targetId}>`) + (added || skipped ? `\n(${added} added${skipped ? `, ${skipped} already had access` : ""})` : "");
+    }
+
+    // Post public message in the CORRECT panel channel for this script
+    try {
+      const ch = await interaction.client.channels.fetch(panelInfo.channelId);
+      if (ch && ch.isTextBased()) {
+        await ch.send({ content: publicMsg });
+      }
+    } catch (err) {
+      console.error("Failed to send whitelist msg to panel channel:", err.message);
+      // fallback: return public text so caller can post locally
+      return {
+        ok: true,
+        ephemeral: `✅ Whitelisted for **${scriptInfo.name}**.\n⚠️ Could not post in panel channel — posting here instead.`,
+        publicFallback: publicMsg
+      };
+    }
+
+    return {
+      ok: true,
+      ephemeral: `✅ Whitelisted for **${scriptInfo.name}**.\nMessage sent in ${panelMention}.`
+    };
   }
 
   // ==================== HANDLER ====================
@@ -520,7 +634,8 @@ const createExtras = function createExtras(ctx) {
           await interaction.reply({ content: "❌ No permission.", ephemeral: true }).catch(() => {});
           return true;
         }
-        await interaction.deferReply({ ephemeral: false }).catch(() => {});
+        // Private (ephemeral) for selection UI
+        await interaction.deferReply({ ephemeral: true }).catch(() => {});
 
         const targetUser = interaction.options.getUser("user");
         const targetRole = interaction.options.getRole("role");
@@ -546,36 +661,43 @@ const createExtras = function createExtras(ctx) {
         const targetType = targetUser ? "user" : "role";
         const targetId = targetUser ? targetUser.id : targetRole.id;
 
-        // Prefer the command user's own scripts so multi-script owners get a dropdown.
-        // If they have none, fall back to this server's panel script.
+        // Only scripts owned by user that already have a panel
         let candidates = await getScriptsByOwner(interaction.user.id);
+        candidates = candidates.filter(s => scriptHasPanel(s.id));
+
         if (candidates.length === 0) {
+          // Maybe staff using panel on this server only
           const panel = getGuildPanelScript(interaction.guildId);
-          if (panel && panel.scriptId) {
+          if (panel && panel.scriptId && scriptHasPanel(panel.scriptId)) {
             const info = await fetchScriptById(panel.scriptId);
             if (info) candidates = [info];
           }
         }
+
         if (candidates.length === 0) {
           await interaction.editReply({
-            content: "❌ You don't have any scripts, and this server has no script panel.\nUpload a script on the website, then run `/setuppanel`."
+            content: "❌ No scripts with a panel found.\nUpload a script on the website, then run `/setuppanel` for it before using `/whitelist`."
           }).catch(() => {});
           return true;
         }
 
         if (candidates.length === 1) {
-          const msg = await doWhitelist(interaction, { targetType, targetId, days, scriptId: candidates[0].id });
-          await interaction.editReply({ content: msg }).catch(() => {});
+          const result = await doWhitelist(interaction, { targetType, targetId, days, scriptId: candidates[0].id });
+          if (result.publicFallback) {
+            try { await interaction.channel.send({ content: result.publicFallback }); } catch {}
+          }
+          await interaction.editReply({ content: result.ephemeral }).catch(() => {});
           return true;
         }
 
+        // Multiple scripts with panels → private dropdown
         const select = new StringSelectMenuBuilder()
           .setCustomId(`whitelist_pick:${targetType}:${targetId}:${days}`)
           .setPlaceholder("Select a script...")
           .addOptions(scriptOptions(candidates));
 
         await interaction.editReply({
-          content: `Select the script to whitelist ${targetType === "user" ? `<@${targetId}>` : `<@&${targetId}>`} for (${days === 0 ? "lifetime" : days + " day(s)"}):`,
+          content: `Select the script to whitelist ${targetType === "user" ? `<@${targetId}>` : `<@&${targetId}>`} for (${days === 0 ? "lifetime" : days + " day(s)"}):\n_Only scripts with a panel are listed._`,
           components: [new ActionRowBuilder().addComponents(select)]
         }).catch(() => {});
         return true;
@@ -594,8 +716,19 @@ const createExtras = function createExtras(ctx) {
         const days = parseInt(daysStr, 10);
         const scriptId = interaction.values[0];
 
-        const msg = await doWhitelist(interaction, { targetType, targetId, days, scriptId });
-        await interaction.editReply({ content: msg, components: [] }).catch(() => {});
+        if (!scriptHasPanel(scriptId)) {
+          await interaction.editReply({
+            content: "❌ That script has no panel. Run `/setuppanel` for it first.",
+            components: []
+          }).catch(() => {});
+          return true;
+        }
+
+        const result = await doWhitelist(interaction, { targetType, targetId, days, scriptId });
+        if (result.publicFallback) {
+          try { await interaction.channel.send({ content: result.publicFallback }); } catch {}
+        }
+        await interaction.editReply({ content: result.ephemeral, components: [] }).catch(() => {});
         return true;
       }
     } catch (err) {
@@ -821,13 +954,7 @@ async function sendPanelEmbed(channel, title, description, scriptId, scriptName,
   );
 
   await channel.send({ embeds: [embed], components: [row1, row2, row3] });
-
-  const cfg = readConfig();
-  if (!cfg[guildId]) cfg[guildId] = {};
-  cfg[guildId].panelChannelId = channel.id;
-  cfg[guildId].panelScriptId = scriptId;
-  cfg[guildId].panelOwnerId = ownerId;
-  writeConfig(cfg);
+  savePanel(guildId, scriptId, channel.id, ownerId);
 }
 
 // ==================== SMALL UI HELPER ====================
@@ -846,11 +973,19 @@ async function handleInteraction(interaction) {
     if (await extras.handle(interaction)) return;
 
     if ((interaction.isButton() || interaction.isModalSubmit() || interaction.isStringSelectMenu()) && interaction.guild) {
-      const blCheck = await checkUserBlacklisted(interaction);
+      // Try extract scriptId from customId patterns like get_script:owner:scriptId
+      let sid = null;
+      const cid = interaction.customId || "";
+      if (cid.startsWith("get_script:")) sid = cid.split(":")[2] || null;
+      else if (cid.startsWith("get_role:")) sid = cid.split(":")[1] || null;
+      else if (cid.startsWith("reset_hwid:")) sid = cid.split(":")[1] || null;
+      else if (cid.startsWith("get_stats:")) sid = cid.split(":")[1] || null;
+
+      const blCheck = await checkUserBlacklisted(interaction, sid);
       if (blCheck) {
         const msg = blCheck === "user"
-          ? "❌ You have been blacklisted by the owner."
-          : `❌ Your role <@&${blCheck}> has been blacklisted from using scripts.`;
+          ? "❌ You have been blacklisted from this script by the owner."
+          : `❌ Your role <@&${blCheck}> has been blacklisted from this script.`;
         return interaction.reply({ content: msg, ephemeral: true }).catch(() => {});
       }
     }
@@ -1066,7 +1201,12 @@ async function handleInteraction(interaction) {
           let panelsCleared = 0;
           for (const gid of Object.keys(cfg)) {
             const g = cfg[gid];
-            if (g && g.panelScriptId === scriptId) {
+            if (!g) continue;
+            if (g.panels && g.panels[scriptId]) {
+              delete g.panels[scriptId];
+              panelsCleared++;
+            }
+            if (g.panelScriptId === scriptId) {
               delete g.panelScriptId;
               delete g.panelOwnerId;
               delete g.panelChannelId;
@@ -1187,6 +1327,56 @@ async function handleInteraction(interaction) {
         }
       }
 
+      
+      if (interaction.isStringSelectMenu() && interaction.customId.startsWith("blacklist_pick:")) {
+        await interaction.deferUpdate().catch(() => {});
+        try {
+          if (!hasPermission(interaction.member, interaction.guildId)) {
+            return interaction.editReply({ content: "❌ No permission.", components: [] }).catch(() => {});
+          }
+          const parts = interaction.customId.split(":");
+          const targetUserId = parts[1];
+          const reasonB64 = parts[2] || "";
+          let reason = "No reason provided";
+          try { reason = Buffer.from(reasonB64, "base64url").toString("utf8") || reason; } catch {}
+          const scriptId = interaction.values[0];
+
+          const myScripts = await getScriptsByOwner(interaction.user.id);
+          const script = myScripts.find(s => s.id === scriptId);
+          if (!script) {
+            return interaction.editReply({ content: "❌ Script not found or not yours.", components: [] }).catch(() => {});
+          }
+
+          const bl = readBlacklist();
+          if (bl.some(b => b.type !== "role" && String(b.userId) === String(targetUserId) && String(b.scriptId || "") === String(scriptId))) {
+            return interaction.editReply({
+              content: `❌ <@${targetUserId}> is already blacklisted from **${script.name}**.`,
+              components: []
+            }).catch(() => {});
+          }
+          bl.push({
+            type: "user",
+            userId: String(targetUserId),
+            username: null,
+            scriptId: String(scriptId),
+            reason,
+            blacklistedBy: interaction.user.id,
+            blacklistedAt: new Date().toISOString()
+          });
+          writeBlacklist(bl);
+          writeKeys(readKeys().filter(k =>
+            !(String(k.userId) === String(targetUserId) && String(k.scriptId) === String(scriptId))
+          ));
+          return interaction.editReply({
+            content: `🚫 **<@${targetUserId}>** has been blacklisted from **${script.name}**.\nAccess to this script only has been revoked.`,
+            components: []
+          }).catch(() => {});
+        } catch (err) {
+          console.error("blacklist_pick error:", err);
+          return interaction.editReply({ content: "❌ Failed to blacklist.", components: [] }).catch(() => {});
+        }
+      }
+
       if (interaction.customId.startsWith("blacklistrole_select:")) {
         await interaction.deferReply({ ephemeral: false }).catch(() => {});
         try {
@@ -1234,15 +1424,14 @@ async function handleInteraction(interaction) {
           const { title, description } = tempData;
           panelTempData.delete(interaction.user.id);
 
-          const limitInfo = await checkPanelLimit(interaction.user.id, interaction.guildId);
-          if (!limitInfo.canCreate) {
-            return interaction.editReply({
-              content: `❌ **Panel limit reached!** (${limitInfo.count}/${limitInfo.max})\nRe-run in a server where you already have a panel to replace it.`
-            }).catch(() => {});
-          }
-
           const myScripts = await getScriptsByOwner(interaction.user.id);
           const selectedScript = myScripts.find(s => s.id === scriptId);
+          const limitInfo = await checkPanelLimit(interaction.user.id, interaction.guildId, scriptId);
+          if (!limitInfo.canCreate) {
+            return interaction.editReply({
+              content: `❌ **Panel limit reached!** (${limitInfo.count}/${limitInfo.max})\nYou can still update a panel for a script that already has one.`
+            }).catch(() => {});
+          }
           if (!selectedScript) return interaction.editReply({ content: "❌ Script not found or not yours!" }).catch(() => {});
 
           await sendPanelEmbed(interaction.channel, title, description, scriptId, selectedScript.name, interaction.user.id, interaction.guildId);
@@ -1935,25 +2124,58 @@ async function handleInteraction(interaction) {
         if (!hasPermission(interaction.member, interaction.guildId)) {
           return interaction.reply({ content: "❌ No permission.", ephemeral: true }).catch(() => {});
         }
-        await interaction.deferReply({ ephemeral: false }).catch(() => {});
+        await interaction.deferReply({ ephemeral: true }).catch(() => {});
         try {
           const targetUser = interaction.options.getUser("user");
           const reason = interaction.options.getString("reason") || "No reason provided";
-          const bl = readBlacklist();
-          if (bl.some(b => b.type !== "role" && String(b.userId) === String(targetUser.id))) {
-            return interaction.editReply({ content: "❌ This user is already blacklisted!" }).catch(() => {});
+          if (!targetUser) {
+            return interaction.editReply({ content: "❌ Select a user to blacklist." }).catch(() => {});
           }
-          bl.push({
-            type: "user",
-            userId: String(targetUser.id), username: targetUser.username, reason,
-            blacklistedBy: interaction.user.id, blacklistedAt: new Date().toISOString()
-          });
-          writeBlacklist(bl);
-          writeKeys(readKeys().filter(k => String(k.userId) !== String(targetUser.id)));
+
+          const myScripts = await getScriptsByOwner(interaction.user.id);
+          if (myScripts.length === 0) {
+            return interaction.editReply({ content: "❌ You don't have any scripts yet." }).catch(() => {});
+          }
+
+          async function applyBlacklist(scriptId, scriptName) {
+            const bl = readBlacklist();
+            if (bl.some(b => b.type !== "role" && String(b.userId) === String(targetUser.id) && String(b.scriptId || "") === String(scriptId))) {
+              return `❌ <@${targetUser.id}> is already blacklisted from **${scriptName}**.`;
+            }
+            bl.push({
+              type: "user",
+              userId: String(targetUser.id),
+              username: targetUser.username,
+              scriptId: String(scriptId),
+              reason,
+              blacklistedBy: interaction.user.id,
+              blacklistedAt: new Date().toISOString()
+            });
+            writeBlacklist(bl);
+            // Revoke keys only for this script
+            writeKeys(readKeys().filter(k =>
+              !(String(k.userId) === String(targetUser.id) && String(k.scriptId) === String(scriptId))
+            ));
+            return `🚫 **<@${targetUser.id}>** has been blacklisted from **${scriptName}**.\nAccess to this script only has been revoked.`;
+          }
+
+          if (myScripts.length === 1) {
+            const msg = await applyBlacklist(myScripts[0].id, myScripts[0].name);
+            return interaction.editReply({ content: msg }).catch(() => {});
+          }
+
+          // Private dropdown to pick which script
+          const select = new StringSelectMenuBuilder()
+            .setCustomId(`blacklist_pick:${targetUser.id}:${Buffer.from(reason).toString("base64url").slice(0, 60)}`)
+            .setPlaceholder("Select a script to blacklist from...")
+            .addOptions(scriptSelectOptions(myScripts));
+
           return interaction.editReply({
-            content: `🚫 **<@${targetUser.id}> has been blacklisted!**\nAll script access has been revoked.`
+            content: `Select which script to blacklist <@${targetUser.id}> from:`,
+            components: [new ActionRowBuilder().addComponents(select)]
           }).catch(() => {});
-        } catch {
+        } catch (err) {
+          console.error("blacklist error:", err);
           return interaction.editReply({ content: "❌ Failed to blacklist user." }).catch(() => {});
         }
       }
