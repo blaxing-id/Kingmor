@@ -20,24 +20,46 @@ const fs = require("fs");
 const path = require("path");
 const axios = require("axios");
 
+// ==================== MULTI-BOT CONFIG ====================
+// Bot 1: BOT_TOKEN atau BOT_TOKEN_1 + DISCORD_CLIENT_ID / DISCORD_CLIENT_ID_1
+// Bot 2: BOT_TOKEN_2 + DISCORD_CLIENT_ID_2 (opsional, fallback ke DISCORD_CLIENT_ID)
+const BOTS = [];
+
+if (process.env.BOT_TOKEN || process.env.BOT_TOKEN_1) {
+  BOTS.push({
+    name: "Bot-1",
+    token: process.env.BOT_TOKEN || process.env.BOT_TOKEN_1,
+    clientId: process.env.DISCORD_CLIENT_ID_1 || process.env.DISCORD_CLIENT_ID || "1545625902585487370"
+  });
+}
+if (process.env.BOT_TOKEN_2) {
+  BOTS.push({
+    name: "Bot-2",
+    token: process.env.BOT_TOKEN_2,
+    clientId: process.env.DISCORD_CLIENT_ID_2 || process.env.DISCORD_CLIENT_ID || "1545625902585487370"
+  });
+}
+
+if (BOTS.length === 0) {
+  console.error("❌ FATAL: Tidak ada BOT_TOKEN / BOT_TOKEN_1 / BOT_TOKEN_2 yang di-set!");
+  process.exit(1);
+}
+
 const CONFIG = {
-  token: process.env.BOT_TOKEN,
-  clientId: process.env.DISCORD_CLIENT_ID || "1545625902585487370",
   apiBase: process.env.API_BASE,
   apiSecret: process.env.API_SECRET
 };
 
 const missing = [];
-if (!CONFIG.token) missing.push("BOT_TOKEN");
 if (!CONFIG.apiBase) missing.push("API_BASE");
 if (!CONFIG.apiSecret) missing.push("API_SECRET");
-
 if (missing.length > 0) {
   console.error(`❌ FATAL: The following env vars are not set: ${missing.join(", ")}`);
   process.exit(1);
 }
 
 CONFIG.apiBase = CONFIG.apiBase.replace(/\/+$/, "");
+console.log(`🚀 Multi-bot mode: ${BOTS.length} bot(s) akan dijalankan`);
 
 // Owner ID yang boleh pakai /premiumwhitelist dan /keypremium
 const OWNER_ID = "1485940617342353594";
@@ -265,11 +287,12 @@ const webhookTempData = new Map();
 const cooldownTempData = new Map();
 const resetHwidUserTempData = new Map();
 
-// ==================== CLIENT ====================
-const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
+// ==================== CLIENTS (multi-bot) ====================
+const clients = []; // semua Client yang aktif
 
 // ==================== GUILDS LIST ====================
-async function updateGuildsList() {
+async function updateGuildsList(client) {
+  if (!client) return;
   try {
     const guilds = client.guilds.cache.map(g => ({
       id: g.id, name: g.name, icon: g.icon, memberCount: g.memberCount
@@ -277,7 +300,7 @@ async function updateGuildsList() {
     await axios.post(`${CONFIG.apiBase}/api/admin/guilds/update`,
       { guilds }, { headers: internalHeaders, timeout: 8000 }
     );
-    console.log(`✅ Updated guilds list: ${guilds.length} guilds`);
+    console.log(`✅ [${client.user?.tag || "bot"}] Updated guilds list: ${guilds.length} guilds`);
   } catch (err) {
     console.error(`❌ Failed to update guilds list: ${describeAxiosError(err)}`);
   }
@@ -712,31 +735,38 @@ const commands = [
 
 commands.push(...extras.commands);
 
-client.once("ready", async () => {
-  const rest = new REST({ version: "10" }).setToken(CONFIG.token);
-  try {
-    await rest.put(Routes.applicationCommands(CONFIG.clientId), { body: commands });
-    console.log(`👑 Bot ready: ${client.user.tag}`);
-    console.log(`🔗 API_BASE: ${CONFIG.apiBase}`);
-    console.log(`💎 Premium: ${PREMIUM_INFO.priceIDR} / ${PREMIUM_INFO.priceUSD}`);
-    console.log(`📢 Discord: ${PREMIUM_INFO.discord}`);
-    console.log(`🔐 Owner ID: ${OWNER_ID}`);
-    await updateGuildsList();
-    setInterval(updateGuildsList, 60 * 1000);
-  } catch (err) {
-    console.error("❌ Failed to register commands:", err);
-  }
-});
+// ==================== ATTACH HANDLERS TO A CLIENT ====================
+function attachClientHandlers(client, botConfig) {
+  client.once("ready", async () => {
+    const rest = new REST({ version: "10" }).setToken(botConfig.token);
+    try {
+      await rest.put(Routes.applicationCommands(botConfig.clientId), { body: commands });
+      console.log(`👑 [${botConfig.name}] Bot ready: ${client.user.tag}`);
+      console.log(`🔗 API_BASE: ${CONFIG.apiBase}`);
+      console.log(`💎 Premium: ${PREMIUM_INFO.priceIDR} / ${PREMIUM_INFO.priceUSD}`);
+      console.log(`📢 Discord: ${PREMIUM_INFO.discord}`);
+      console.log(`🔐 Owner ID: ${OWNER_ID}`);
+      console.log(`🆔 Client ID: ${botConfig.clientId}`);
+      await updateGuildsList(client);
+      setInterval(() => updateGuildsList(client), 60 * 1000);
+    } catch (err) {
+      console.error(`❌ [${botConfig.name}] Failed to register commands:`, err);
+    }
+  });
 
-client.on("guildCreate", async (guild) => {
-  console.log(`✅ Joined guild: ${guild.name} (${guild.id})`);
-  await updateGuildsList();
-});
+  client.on("guildCreate", async (guild) => {
+    console.log(`✅ [${botConfig.name}] Joined guild: ${guild.name} (${guild.id})`);
+    await updateGuildsList(client);
+  });
 
-client.on("guildDelete", async (guild) => {
-  console.log(`❌ Left guild: ${guild.name} (${guild.id})`);
-  await updateGuildsList();
-});
+  client.on("guildDelete", async (guild) => {
+    console.log(`❌ [${botConfig.name}] Left guild: ${guild.name} (${guild.id})`);
+    await updateGuildsList(client);
+  });
+
+  // Attach shared interaction handler
+  client.on("interactionCreate", handleInteraction);
+}
 
 // ==================== PANEL EMBED ====================
 async function sendPanelEmbed(channel, title, description, scriptId, scriptName, ownerId, guildId) {
@@ -779,7 +809,8 @@ function scriptSelectOptions(scripts) {
 }
 
 // ==================== INTERACTION HANDLER ====================
-client.on("interactionCreate", async interaction => {
+// Shared interaction handler (akan di-attach ke setiap bot)
+async function handleInteraction(interaction) {
   try {
     if (await extras.handle(interaction)) return;
 
@@ -2158,10 +2189,30 @@ client.on("interactionCreate", async interaction => {
       else if (!interaction.replied) await interaction.reply({ content: "❌ An error occurred. Please try again later.", ephemeral: true });
     } catch {}
   }
-});
+}
 
 process.on("unhandledRejection", (error) => {
   console.error("❌ Unhandled rejection:", error);
 });
 
-client.login(CONFIG.token);
+// ==================== START ALL BOTS ====================
+async function startAllBots() {
+  console.log(`🚀 Starting ${BOTS.length} bot(s)...`);
+  for (const botConfig of BOTS) {
+    const client = new Client({
+      intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
+    });
+    clients.push(client);
+    attachClientHandlers(client, botConfig);
+
+    // Attach the big interactionCreate handler (defined below in original code)
+    // We re-bind it after the handler is defined by moving the listener registration here is hard;
+    // so we will register it right after the original client.on("interactionCreate"...) is replaced.
+    client.login(botConfig.token).catch(err => {
+      console.error(`❌ [${botConfig.name}] Login failed:`, err.message);
+    });
+  }
+}
+
+// Note: interactionCreate is still attached later; we will fix that next.
+startAllBots();
