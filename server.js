@@ -24,8 +24,12 @@ const ADMIN_USER_ID = "1485940617342353594";
 const DISCORD_INVITE = "https://discord.gg/QgubzPzzy";
 const BOT_INVITE = "https://discord.com/oauth2/authorize?client_id=1545625902585487370&permissions=2952873984&integration_type=0&scope=bot";
 const BOT_INVITE_2 = "https://discord.com/oauth2/authorize?client_id=1555752792113811506&permissions=277293878288&integration_type=0&scope=bot";
-const BOT_1_NAME = "Kingmor Main";
-const BOT_2_NAME = "Kingmor Alt";
+const BOT_1_NAME = process.env.BOT_1_NAME || "Kingmor";
+const BOT_1_TAG = process.env.BOT_1_TAG || "Kingmor#0001";
+const BOT_1_AVATAR = process.env.BOT_1_AVATAR || "https://cdn.discordapp.com/embed/avatars/0.png";
+const BOT_2_NAME = process.env.BOT_2_NAME || "Kingmor Alt";
+const BOT_2_TAG = process.env.BOT_2_TAG || "Kingmor#0002";
+const BOT_2_AVATAR = process.env.BOT_2_AVATAR || "https://cdn.discordapp.com/embed/avatars/1.png";
 const PREMIUM_PRICE_IDR = "Rp 20.000";
 const PREMIUM_PRICE_USD = "$2";
 const SCRIPT_LIMIT = { free: 2, premium: 5 };
@@ -161,7 +165,7 @@ function checkApiSecret(req) {
 }
 function requireAuth(req, res, next) {
   if (!req.session || !req.session.user) return res.redirect("/login");
-  // Setelah login, wajib pilih bot dulu
+  // After login, user must select a bot first
   if (!req.session.selectedBot && req.path !== "/select-bot" && !req.path.startsWith("/api/")) {
     return res.redirect("/select-bot");
   }
@@ -371,7 +375,17 @@ input[type=file]{display:none}
 .foot-in a:hover{color:var(--gold)}
 .toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,20px);opacity:0;z-index:999;padding:12px 20px;border-radius:12px;font-size:14px;font-weight:600;background:var(--panel2);border:1px solid var(--line2);transition:all .25s;max-width:calc(100% - 32px)}
 .toast.show{opacity:1;transform:translate(-50%,0)}
+
 .toast.ok{border-color:rgba(111,220,140,.5)}.toast.err{border-color:rgba(255,107,94,.5)}
+.card{position:relative;overflow:hidden}
+.card::before{content:"";position:absolute;inset:0 0 auto 0;height:1px;background:linear-gradient(90deg,transparent,rgba(242,193,78,.45),transparent)}
+.btn-gold{box-shadow:0 8px 24px rgba(242,193,78,.18)}
+.btn-discord:hover{filter:brightness(1.08)}
+.stat{transition:border-color .15s,transform .15s}
+.stat:hover{border-color:var(--line2);transform:translateY(-1px)}
+.sc{transition:border-color .15s,box-shadow .15s}
+.sc:hover{box-shadow:0 12px 28px rgba(0,0,0,.35)}
+
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.term-body .ln{opacity:1}}
 `;
 
@@ -488,8 +502,6 @@ app.get("/login", (req, res) => {
       <div class="stack">
         <a class="btn btn-discord btn-block" href="/auth/discord">Login with Discord</a>
         <a class="btn btn-ghost btn-block" href="${DISCORD_INVITE}" target="_blank" rel="noopener">Join our Discord server</a>
-        <a class="btn btn-ghost btn-block" href="${BOT_INVITE}" target="_blank" rel="noopener">Invite Bot 1 (Main)</a>
-        <a class="btn btn-ghost btn-block" href="${BOT_INVITE_2}" target="_blank" rel="noopener">Invite Bot 2 (Alt)</a>
       </div>
     </div></main>`,
   }));
@@ -532,7 +544,7 @@ app.get("/auth/discord/callback", async (req, res) => {
         ? `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png`
         : `https://cdn.discordapp.com/embed/avatars/0.png`,
     };
-    // Kalau belum pernah pilih bot → ke halaman pilih bot
+    // If no bot selected yet → bot selection page
     if (!req.session.selectedBot) {
       return res.redirect("/select-bot");
     }
@@ -547,70 +559,84 @@ app.get("/logout", (req, res) => {
   req.session.destroy(() => res.redirect("/"));
 });
 
-// ==================== SELECT BOT (setelah login) ====================
+// ==================== SELECT BOT (after login) ====================
 app.get("/select-bot", (req, res) => {
   if (!req.session || !req.session.user) return res.redirect("/login");
 
   const current = req.session.selectedBot || null;
   const body = `
 <main class="wrap center">
-  <div class="card" style="width:min(640px,100%);text-align:center">
-    <div class="brand" style="justify-content:center;margin-bottom:14px"><i>👑</i>Kingmor</div>
-    <h1>Pilih Bot</h1>
-    <p style="margin-bottom:22px">Pilih bot mana yang mau kamu pakai / ingat di akun ini.<br>
-    Bot 1 sudah full siap pakai. Bot 2 harus di-invite dulu ke server kamu.</p>
+  <div class="card bot-pick-card">
+    <div class="brand" style="justify-content:center;margin-bottom:8px"><i>👑</i>Kingmor</div>
+    <h1 style="text-align:center">Choose your bot</h1>
+    <p style="text-align:center;margin-bottom:28px">Select which bot you want to use with this account. You can change it later from the dashboard.</p>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;text-align:left">
-      <!-- BOT 1 -->
-      <div style="padding:20px;border:1px solid ${current === "1" ? "rgba(242,193,78,.6)" : "var(--line2)"};border-radius:16px;background:var(--panel2)">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-          <span style="font-size:22px">🤖</span>
-          <div>
-            <div style="font-weight:800;font-size:16px">${BOT_1_NAME}</div>
-            <div style="font-size:12px;color:var(--ok);font-weight:700">● FULL — Ready</div>
-          </div>
+    <div class="bot-list">
+      <div class="bot-row ${current === "1" ? "selected" : ""}" data-bot="1" onclick="selectBot('1')">
+        <img class="bot-avatar" src="${BOT_1_AVATAR}" alt="${BOT_1_TAG}" onerror="this.src='https://cdn.discordapp.com/embed/avatars/0.png'">
+        <div class="bot-meta">
+          <div class="bot-tag">${BOT_1_TAG}</div>
+          <div class="bot-status ready">● Ready</div>
         </div>
-        <p style="font-size:13px;color:var(--mute);margin-bottom:14px">Bot utama Kingmor. Semua fitur aktif, langsung bisa dipakai.</p>
-        <button class="btn btn-gold btn-block btn-sm" onclick="selectBot('1')">
-          ${current === "1" ? "✓ Sedang dipilih" : "Pilih Bot 1"}
-        </button>
-        <a class="btn btn-ghost btn-block btn-sm" style="margin-top:8px" href="${BOT_INVITE}" target="_blank" rel="noopener">Invite Bot 1</a>
+        <a class="btn btn-ghost btn-sm bot-invite" href="${BOT_INVITE}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Invite</a>
       </div>
 
-      <!-- BOT 2 -->
-      <div style="padding:20px;border:1px solid ${current === "2" ? "rgba(242,193,78,.6)" : "var(--line2)"};border-radius:16px;background:var(--panel2)">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-          <span style="font-size:22px">🤖</span>
-          <div>
-            <div style="font-weight:800;font-size:16px">${BOT_2_NAME}</div>
-            <div style="font-size:12px;color:var(--amber);font-weight:700">● AVAILABLE — Invite dulu</div>
-          </div>
+      <div class="bot-row ${current === "2" ? "selected" : ""}" data-bot="2" onclick="selectBot('2')">
+        <img class="bot-avatar" src="${BOT_2_AVATAR}" alt="${BOT_2_TAG}" onerror="this.src='https://cdn.discordapp.com/embed/avatars/1.png'">
+        <div class="bot-meta">
+          <div class="bot-tag">${BOT_2_TAG}</div>
+          <div class="bot-status available">● Available — invite first</div>
         </div>
-        <p style="font-size:13px;color:var(--mute);margin-bottom:14px">Bot cadangan. Harus di-invite ke server Discord kamu dulu sebelum dipakai.</p>
-        <a class="btn btn-discord btn-block btn-sm" href="${BOT_INVITE_2}" target="_blank" rel="noopener">Invite Bot 2 dulu</a>
-        <button class="btn btn-gold btn-block btn-sm" style="margin-top:8px" onclick="selectBot('2')">
-          ${current === "2" ? "✓ Sedang dipilih" : "Pilih Bot 2"}
-        </button>
+        <a class="btn btn-ghost btn-sm bot-invite" href="${BOT_INVITE_2}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Invite</a>
       </div>
     </div>
 
-    <p style="margin-top:18px;font-size:12px;color:var(--mute)">Kamu bisa ganti pilihan nanti dari dashboard.</p>
-    ${current ? `<a class="btn btn-ghost btn-sm" style="margin-top:12px" href="/dashboard">Lanjut ke Dashboard →</a>` : ""}
+    ${current ? `<a class="btn btn-gold btn-block" style="margin-top:22px" href="/dashboard">Continue to Dashboard →</a>` : `<p class="bot-hint">Click a bot row to select it</p>`}
   </div>
-</main>`;
+</main>
+
+<style>
+.bot-pick-card{width:min(480px,100%);padding:36px 28px}
+.bot-list{display:flex;flex-direction:column;gap:12px}
+.bot-row{
+  display:flex;align-items:center;gap:14px;
+  padding:14px 16px;border-radius:14px;
+  border:1px solid var(--line2);background:#0e0c0a;
+  cursor:pointer;transition:border-color .15s,background .15s,transform .15s,box-shadow .15s
+}
+.bot-row:hover{border-color:rgba(242,193,78,.45);background:#14110e;transform:translateY(-1px)}
+.bot-row.selected{
+  border-color:rgba(242,193,78,.7);
+  background:linear-gradient(135deg,rgba(242,193,78,.12),rgba(224,138,0,.04));
+  box-shadow:0 0 0 1px rgba(242,193,78,.25),0 12px 32px rgba(0,0,0,.35)
+}
+.bot-avatar{
+  width:48px;height:48px;border-radius:50%;
+  border:2px solid var(--line2);object-fit:cover;flex-shrink:0;
+  background:#1a1612
+}
+.bot-row.selected .bot-avatar{border-color:var(--gold)}
+.bot-meta{flex:1;min-width:0}
+.bot-tag{font-weight:700;font-size:15px;letter-spacing:-.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bot-status{font-size:12px;font-weight:600;margin-top:2px}
+.bot-status.ready{color:var(--ok)}
+.bot-status.available{color:var(--amber)}
+.bot-invite{flex-shrink:0;min-width:78px}
+.bot-hint{text-align:center;margin-top:18px;font-size:13px;color:var(--mute)}
+</style>`;
 
   const script = `
 async function selectBot(id) {
   try {
-    const r = await fetch('/api/select-bot', {
+    var r = await fetch('/api/select-bot', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bot: id })
     });
-    const d = await r.json();
-    if (!r.ok) { toast(d.error || 'Gagal menyimpan', 'err'); return; }
-    toast('Bot ' + id + ' dipilih!', 'ok');
-    setTimeout(function(){ location.href = '/dashboard'; }, 800);
+    var d = await r.json();
+    if (!r.ok) { toast(d.error || 'Failed to save', 'err'); return; }
+    toast('Bot selected', 'ok');
+    setTimeout(function(){ location.href = '/dashboard'; }, 700);
   } catch (e) {
     toast('Server error', 'err');
   }
@@ -618,7 +644,7 @@ async function selectBot(id) {
 
   res.send(page({
     req,
-    title: "Kingmor — Pilih Bot",
+    title: "Kingmor — Choose Bot",
     active: "",
     body,
     script,
@@ -632,7 +658,7 @@ app.post("/api/select-bot", (req, res) => {
   }
   const bot = String(req.body?.bot || "");
   if (bot !== "1" && bot !== "2") {
-    return res.status(400).json({ error: "Bot harus 1 atau 2" });
+    return res.status(400).json({ error: "Bot must be 1 or 2" });
   }
   req.session.selectedBot = bot;
   res.json({ ok: true, selectedBot: bot });
@@ -699,7 +725,7 @@ app.get("/api/scripts/:id/source", requireAuth, (req, res) => {
   });
 });
 
-// Admin bisa lihat source asli user manapun
+// Admin can view original source from any user
 app.get("/api/scripts/:id/source/admin", (req, res) => {
   const sessionAdmin = req.session && req.session.user && req.session.user.id === ADMIN_USER_ID;
   const headerAdmin = (() => {
@@ -1655,12 +1681,12 @@ app.get("/dashboard", requireAuth, (req, res) => {
   <div class="page-head" style="padding-bottom:0">
     <h1>Dashboard</h1>
     <p>Manage your protected scripts. Use the Discord bot for keys, whitelists and panels.</p>
-    <div style="margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <span class="badge ${req.session.selectedBot === "2" ? "free" : "prem"}">
-        Bot aktif: ${req.session.selectedBot === "2" ? BOT_2_NAME + " (Alt)" : BOT_1_NAME + " (Main)"}
+        Active bot: ${req.session.selectedBot === "2" ? BOT_2_TAG : BOT_1_TAG}
       </span>
-      <a class="btn btn-ghost btn-sm" href="/select-bot">Ganti bot</a>
-      <a class="btn btn-ghost btn-sm" href="${req.session.selectedBot === "2" ? BOT_INVITE_2 : BOT_INVITE}" target="_blank" rel="noopener">Invite bot ini</a>
+      <a class="btn btn-ghost btn-sm" href="/select-bot">Change bot</a>
+      <a class="btn btn-ghost btn-sm" href="${req.session.selectedBot === "2" ? BOT_INVITE_2 : BOT_INVITE}" target="_blank" rel="noopener">Invite this bot</a>
     </div>
   </div>
 
@@ -1874,7 +1900,7 @@ app.get("/admin/sources", isAdmin, (req, res) => {
 <main class="wrap" style="padding-bottom:60px">
   <div class="page-head">
     <h1>🕵️ Player Source</h1>
-    <p>Lihat dan download source Lua asli dari semua user yang upload di Kingmor. Halaman ini khusus admin.</p>
+    <p>View and download original Lua sources uploaded by every user. Admin only.</p>
   </div>
 
   <div class="stats" style="margin-top:0">
@@ -1888,7 +1914,7 @@ app.get("/admin/sources", isAdmin, (req, res) => {
     <h2>Search</h2>
     <div class="ln"></div>
   </div>
-  <input id="srcSearch" placeholder="Cari nama user atau nama script..." style="margin-bottom:20px">
+  <input id="srcSearch" placeholder="Search by username or script name..." style="margin-bottom:20px">
 
   <div class="h-row">
     <h2>All players</h2>
@@ -1896,7 +1922,7 @@ app.get("/admin/sources", isAdmin, (req, res) => {
   </div>
 
   <div id="srcList">
-    ${userCards || `<div class="empty">Belum ada script yang di-upload oleh siapa pun.</div>`}
+    ${userCards || `<div class="empty">No scripts have been uploaded yet.</div>`}
   </div>
 </main>
 
