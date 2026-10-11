@@ -23,6 +23,9 @@ const PUBLIC_DIR = path.join(__dirname, "public");
 const ADMIN_USER_ID = "1485940617342353594";
 const DISCORD_INVITE = "https://discord.gg/QgubzPzzy";
 const BOT_INVITE = "https://discord.com/oauth2/authorize?client_id=1545625902585487370&permissions=2952873984&integration_type=0&scope=bot";
+const BOT_INVITE_2 = "https://discord.com/oauth2/authorize?client_id=1555752792113811506&permissions=277293878288&integration_type=0&scope=bot";
+const BOT_1_NAME = "Kingmor Main";
+const BOT_2_NAME = "Kingmor Alt";
 const PREMIUM_PRICE_IDR = "Rp 20.000";
 const PREMIUM_PRICE_USD = "$2";
 const SCRIPT_LIMIT = { free: 2, premium: 5 };
@@ -158,6 +161,10 @@ function checkApiSecret(req) {
 }
 function requireAuth(req, res, next) {
   if (!req.session || !req.session.user) return res.redirect("/login");
+  // Setelah login, wajib pilih bot dulu
+  if (!req.session.selectedBot && req.path !== "/select-bot" && !req.path.startsWith("/api/")) {
+    return res.redirect("/select-bot");
+  }
   next();
 }
 function isAdmin(req, res, next) {
@@ -481,7 +488,8 @@ app.get("/login", (req, res) => {
       <div class="stack">
         <a class="btn btn-discord btn-block" href="/auth/discord">Login with Discord</a>
         <a class="btn btn-ghost btn-block" href="${DISCORD_INVITE}" target="_blank" rel="noopener">Join our Discord server</a>
-        <a class="btn btn-ghost btn-block" href="${BOT_INVITE}" target="_blank" rel="noopener">Invite the bot to your server</a>
+        <a class="btn btn-ghost btn-block" href="${BOT_INVITE}" target="_blank" rel="noopener">Invite Bot 1 (Main)</a>
+        <a class="btn btn-ghost btn-block" href="${BOT_INVITE_2}" target="_blank" rel="noopener">Invite Bot 2 (Alt)</a>
       </div>
     </div></main>`,
   }));
@@ -524,6 +532,10 @@ app.get("/auth/discord/callback", async (req, res) => {
         ? `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png`
         : `https://cdn.discordapp.com/embed/avatars/0.png`,
     };
+    // Kalau belum pernah pilih bot → ke halaman pilih bot
+    if (!req.session.selectedBot) {
+      return res.redirect("/select-bot");
+    }
     res.redirect("/dashboard");
   } catch (err) {
     console.error("Discord OAuth error:", err?.response?.data || err.message);
@@ -533,6 +545,97 @@ app.get("/auth/discord/callback", async (req, res) => {
 
 app.get("/logout", (req, res) => {
   req.session.destroy(() => res.redirect("/"));
+});
+
+// ==================== SELECT BOT (setelah login) ====================
+app.get("/select-bot", (req, res) => {
+  if (!req.session || !req.session.user) return res.redirect("/login");
+
+  const current = req.session.selectedBot || null;
+  const body = `
+<main class="wrap center">
+  <div class="card" style="width:min(640px,100%);text-align:center">
+    <div class="brand" style="justify-content:center;margin-bottom:14px"><i>👑</i>Kingmor</div>
+    <h1>Pilih Bot</h1>
+    <p style="margin-bottom:22px">Pilih bot mana yang mau kamu pakai / ingat di akun ini.<br>
+    Bot 1 sudah full siap pakai. Bot 2 harus di-invite dulu ke server kamu.</p>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;text-align:left">
+      <!-- BOT 1 -->
+      <div style="padding:20px;border:1px solid ${current === "1" ? "rgba(242,193,78,.6)" : "var(--line2)"};border-radius:16px;background:var(--panel2)">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+          <span style="font-size:22px">🤖</span>
+          <div>
+            <div style="font-weight:800;font-size:16px">${BOT_1_NAME}</div>
+            <div style="font-size:12px;color:var(--ok);font-weight:700">● FULL — Ready</div>
+          </div>
+        </div>
+        <p style="font-size:13px;color:var(--mute);margin-bottom:14px">Bot utama Kingmor. Semua fitur aktif, langsung bisa dipakai.</p>
+        <button class="btn btn-gold btn-block btn-sm" onclick="selectBot('1')">
+          ${current === "1" ? "✓ Sedang dipilih" : "Pilih Bot 1"}
+        </button>
+        <a class="btn btn-ghost btn-block btn-sm" style="margin-top:8px" href="${BOT_INVITE}" target="_blank" rel="noopener">Invite Bot 1</a>
+      </div>
+
+      <!-- BOT 2 -->
+      <div style="padding:20px;border:1px solid ${current === "2" ? "rgba(242,193,78,.6)" : "var(--line2)"};border-radius:16px;background:var(--panel2)">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+          <span style="font-size:22px">🤖</span>
+          <div>
+            <div style="font-weight:800;font-size:16px">${BOT_2_NAME}</div>
+            <div style="font-size:12px;color:var(--amber);font-weight:700">● AVAILABLE — Invite dulu</div>
+          </div>
+        </div>
+        <p style="font-size:13px;color:var(--mute);margin-bottom:14px">Bot cadangan. Harus di-invite ke server Discord kamu dulu sebelum dipakai.</p>
+        <a class="btn btn-discord btn-block btn-sm" href="${BOT_INVITE_2}" target="_blank" rel="noopener">Invite Bot 2 dulu</a>
+        <button class="btn btn-gold btn-block btn-sm" style="margin-top:8px" onclick="selectBot('2')">
+          ${current === "2" ? "✓ Sedang dipilih" : "Pilih Bot 2"}
+        </button>
+      </div>
+    </div>
+
+    <p style="margin-top:18px;font-size:12px;color:var(--mute)">Kamu bisa ganti pilihan nanti dari dashboard.</p>
+    ${current ? `<a class="btn btn-ghost btn-sm" style="margin-top:12px" href="/dashboard">Lanjut ke Dashboard →</a>` : ""}
+  </div>
+</main>`;
+
+  const script = `
+async function selectBot(id) {
+  try {
+    const r = await fetch('/api/select-bot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bot: id })
+    });
+    const d = await r.json();
+    if (!r.ok) { toast(d.error || 'Gagal menyimpan', 'err'); return; }
+    toast('Bot ' + id + ' dipilih!', 'ok');
+    setTimeout(function(){ location.href = '/dashboard'; }, 800);
+  } catch (e) {
+    toast('Server error', 'err');
+  }
+}`;
+
+  res.send(page({
+    req,
+    title: "Kingmor — Pilih Bot",
+    active: "",
+    body,
+    script,
+    bare: true
+  }));
+});
+
+app.post("/api/select-bot", (req, res) => {
+  if (!req.session || !req.session.user) {
+    return res.status(401).json({ error: "Not logged in" });
+  }
+  const bot = String(req.body?.bot || "");
+  if (bot !== "1" && bot !== "2") {
+    return res.status(400).json({ error: "Bot harus 1 atau 2" });
+  }
+  req.session.selectedBot = bot;
+  res.json({ ok: true, selectedBot: bot });
 });
 
 // ==================== API WHOAMI (debug) ====================
@@ -1552,6 +1655,13 @@ app.get("/dashboard", requireAuth, (req, res) => {
   <div class="page-head" style="padding-bottom:0">
     <h1>Dashboard</h1>
     <p>Manage your protected scripts. Use the Discord bot for keys, whitelists and panels.</p>
+    <div style="margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span class="badge ${req.session.selectedBot === "2" ? "free" : "prem"}">
+        Bot aktif: ${req.session.selectedBot === "2" ? BOT_2_NAME + " (Alt)" : BOT_1_NAME + " (Main)"}
+      </span>
+      <a class="btn btn-ghost btn-sm" href="/select-bot">Ganti bot</a>
+      <a class="btn btn-ghost btn-sm" href="${req.session.selectedBot === "2" ? BOT_INVITE_2 : BOT_INVITE}" target="_blank" rel="noopener">Invite bot ini</a>
+    </div>
   </div>
 
   <div class="stats">
