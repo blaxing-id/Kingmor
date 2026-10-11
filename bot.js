@@ -461,26 +461,21 @@ const createExtras = function createExtras(ctx) {
   // ⭐ UPDATED: Whitelist publik dengan ping user/role + link panel
   async function doWhitelist(interaction, { targetType, targetId, days, scriptId }) {
     const scriptInfo = await fetchScriptById(scriptId);
-    if (!scriptInfo) return { ok: false, ephemeral: "❌ That script no longer exists." };
+    if (!scriptInfo) return "❌ That script no longer exists.";
 
-    // Must own the script (or be staff with panel permission - still require panel on script)
     const owns = String(scriptInfo.ownerId) === String(interaction.user.id);
     if (!owns && !hasPermission(interaction.member, interaction.guildId)) {
-      return { ok: false, ephemeral: "❌ You can only whitelist for your own scripts." };
+      return "❌ You can only whitelist for your own scripts.";
     }
 
     // Script MUST have a panel set up
     const panelInfo = findPanelForScript(scriptId);
     if (!panelInfo || !panelInfo.channelId) {
-      return {
-        ok: false,
-        ephemeral: `❌ **${scriptInfo.name}** has no panel yet.\nRun \`/setuppanel\` for this script first before whitelisting.`
-      };
+      return `❌ **${scriptInfo.name}** has no panel yet.\nRun \`/setuppanel\` for this script first before whitelisting.`;
     }
 
     const keys = readKeys();
     const expiry = days === 0 ? null : new Date(Date.now() + days * 86400000).toISOString();
-    // buyer role from the guild where the panel lives (or current guild)
     const cfgPanelGuild = readConfig()[panelInfo.guildId] || {};
     const cfgHere = readConfig()[interaction.guildId] || {};
     const buyerRoleId =
@@ -496,16 +491,14 @@ const createExtras = function createExtras(ctx) {
       !(k.expiry && new Date(k.expiry) < new Date())
     );
 
+    // Only the channel LINK in the message changes (points to THIS script's panel)
+    // The message itself is posted in the channel where the command was run.
     const panelMention = `<#${panelInfo.channelId}>`;
     const formatWhitelistMessage = (mention) =>
-      `${mention}\nYou have been whitelisted for **${scriptInfo.name}**!\nGet your script here → ${panelMention}`;
-
-    let publicMsg = null;
+      `${mention}\nYou have been whitelisted for **${scriptInfo.name}**!\nYou can access the script via this message --> ${panelMention}`;
 
     if (targetType === "user") {
-      if (hasActive(targetId)) {
-        return { ok: false, ephemeral: `❌ <@${targetId}> already has access to **${scriptInfo.name}**.` };
-      }
+      if (hasActive(targetId)) return `❌ <@${targetId}> already has access to **${scriptInfo.name}**.`;
 
       let username = null;
       try { username = (await interaction.client.users.fetch(targetId)).username; } catch {}
@@ -526,58 +519,39 @@ const createExtras = function createExtras(ctx) {
         } catch {}
       }
 
-      publicMsg = formatWhitelistMessage(`<@${targetId}>`);
-    } else {
-      // role
-      let role = null;
-      try {
-        role = await interaction.guild.roles.fetch(targetId);
-      } catch (e) {
-        return { ok: false, ephemeral: "❌ Role not found or invalid in this server." };
-      }
-      if (!role) return { ok: false, ephemeral: "❌ Role not found or invalid in this server." };
-
-      await interaction.guild.members.fetch().catch(() => {});
-      const members = role.members.filter(m => !m.user.bot);
-      let added = 0, skipped = 0;
-
-      for (const [, member] of members) {
-        if (hasActive(member.id)) { skipped++; continue; }
-        keys.push({
-          key: generateKey(), hwid: null,
-          userId: String(member.id), username: member.user.username, scriptId,
-          redeemedAt: new Date().toISOString(), expiry,
-          createdAt: new Date().toISOString(), createdBy: interaction.user.id
-        });
-        added++;
-        if (buyerRoleId) {
-          try { await member.roles.add(buyerRoleId); } catch {}
-        }
-      }
-      writeKeys(keys);
-      publicMsg = formatWhitelistMessage(`<@&${targetId}>`) + (added || skipped ? `\n(${added} added${skipped ? `, ${skipped} already had access` : ""})` : "");
+      return formatWhitelistMessage(`<@${targetId}>`);
     }
 
-    // Post public message in the CORRECT panel channel for this script
+    // role
+    let role = null;
     try {
-      const ch = await interaction.client.channels.fetch(panelInfo.channelId);
-      if (ch && ch.isTextBased()) {
-        await ch.send({ content: publicMsg });
-      }
-    } catch (err) {
-      console.error("Failed to send whitelist msg to panel channel:", err.message);
-      // fallback: return public text so caller can post locally
-      return {
-        ok: true,
-        ephemeral: `✅ Whitelisted for **${scriptInfo.name}**.\n⚠️ Could not post in panel channel — posting here instead.`,
-        publicFallback: publicMsg
-      };
+      role = await interaction.guild.roles.fetch(targetId);
+    } catch (e) {
+      return "❌ Role not found or invalid in this server.";
     }
+    if (!role) return "❌ Role not found or invalid in this server.";
 
-    return {
-      ok: true,
-      ephemeral: `✅ Whitelisted for **${scriptInfo.name}**.\nMessage sent in ${panelMention}.`
-    };
+    await interaction.guild.members.fetch().catch(() => {});
+    const members = role.members.filter(m => !m.user.bot);
+    let added = 0, skipped = 0;
+
+    for (const [, member] of members) {
+      if (hasActive(member.id)) { skipped++; continue; }
+      keys.push({
+        key: generateKey(), hwid: null,
+        userId: String(member.id), username: member.user.username, scriptId,
+        redeemedAt: new Date().toISOString(), expiry,
+        createdAt: new Date().toISOString(), createdBy: interaction.user.id
+      });
+      added++;
+      if (buyerRoleId) {
+        try { await member.roles.add(buyerRoleId); } catch {}
+      }
+    }
+    writeKeys(keys);
+
+    const note = skipped > 0 ? ` (${added} added, ${skipped} already had access)` : (added ? ` (${added} added)` : "");
+    return formatWhitelistMessage(`<@&${targetId}>`) + note;
   }
 
   // ==================== HANDLER ====================
@@ -682,11 +656,15 @@ const createExtras = function createExtras(ctx) {
         }
 
         if (candidates.length === 1) {
-          const result = await doWhitelist(interaction, { targetType, targetId, days, scriptId: candidates[0].id });
-          if (result.publicFallback) {
-            try { await interaction.channel.send({ content: result.publicFallback }); } catch {}
+          const msg = await doWhitelist(interaction, { targetType, targetId, days, scriptId: candidates[0].id });
+          // Post public whitelist message in the command channel; keep ephemeral reply as ack
+          const isError = typeof msg === "string" && msg.startsWith("❌");
+          if (!isError) {
+            try { await interaction.channel.send({ content: msg }); } catch {}
+            await interaction.editReply({ content: "✅ Whitelist done. Message posted in this channel." }).catch(() => {});
+          } else {
+            await interaction.editReply({ content: msg }).catch(() => {});
           }
-          await interaction.editReply({ content: result.ephemeral }).catch(() => {});
           return true;
         }
 
@@ -724,11 +702,14 @@ const createExtras = function createExtras(ctx) {
           return true;
         }
 
-        const result = await doWhitelist(interaction, { targetType, targetId, days, scriptId });
-        if (result.publicFallback) {
-          try { await interaction.channel.send({ content: result.publicFallback }); } catch {}
+        const msg = await doWhitelist(interaction, { targetType, targetId, days, scriptId });
+        const isError = typeof msg === "string" && msg.startsWith("❌");
+        if (!isError) {
+          try { await interaction.channel.send({ content: msg }); } catch {}
+          await interaction.editReply({ content: "✅ Whitelist done. Message posted in this channel.", components: [] }).catch(() => {});
+        } else {
+          await interaction.editReply({ content: msg, components: [] }).catch(() => {});
         }
-        await interaction.editReply({ content: result.ephemeral, components: [] }).catch(() => {});
         return true;
       }
     } catch (err) {
