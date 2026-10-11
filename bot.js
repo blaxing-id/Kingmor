@@ -122,8 +122,8 @@ function premiumRequiredReply(commandName, extraNote) {
     .setDescription(
       `The command \`/${commandName}\` is only available for **Kingmor Premium** users.\n\n` +
       `**Why upgrade?**\n` +
-      `• 📜 **5 scripts** (Free: 2)\n` +
-      `• 🎛️ \`/setuppanel\` — up to **5 panels** (Free: 2 max)\n` +
+      `• 📜 **10 scripts** (Free: 2)\n` +
+      `• 🎛️ \`/setuppanel\` — up to **10 panels** (Free: 2 max)\n` +
       `• 🎮 \`/freemode\` — enable free mode on your scripts\n` +
       `• 🚫 \`/blacklistrole\` — blacklist roles\n` +
       `• 🔓 \`/unblacklist role\` — unblacklist roles\n` +
@@ -259,10 +259,12 @@ function clearCache(ownerId) {
 }
 
 // ==================== PANEL LIMIT HELPER ====================
-async function checkPanelLimit(ownerId) {
+async function checkPanelLimit(ownerId, guildId = null) {
   try {
+    const params = { ownerId };
+    if (guildId) params.guildId = guildId;
     const res = await axios.get(`${CONFIG.apiBase}/api/panels/count`, {
-      headers: internalHeaders, params: { ownerId }, timeout: 8000
+      headers: internalHeaders, params, timeout: 8000
     });
     return res.data;
   } catch (err) {
@@ -274,8 +276,8 @@ async function checkPanelLimit(ownerId) {
       if (g && String(g.panelOwnerId) === String(ownerId) && g.panelScriptId) count++;
     }
     const premium = isPremiumLocal(ownerId);
-    const max = premium ? 5 : 2;
-    return { count, max, premium, remaining: Math.max(0, max - count), canCreate: count < max };
+    const max = premium ? 10 : 2;
+    return { count, max, premium, remaining: Math.max(0, max - count), canCreate: count < max, replacing: false };
   }
 }
 
@@ -513,21 +515,19 @@ const createExtras = function createExtras(ctx) {
         const targetType = targetUser ? "user" : "role";
         const targetId = targetUser ? targetUser.id : targetRole.id;
 
-        // Prefer guild panel script so whitelist-role staff can whitelist
-        // for the script owned by the panel owner (not only their own scripts).
-        let candidates = [];
-        const panel = getGuildPanelScript(interaction.guildId);
-        if (panel && panel.scriptId) {
-          const info = await fetchScriptById(panel.scriptId);
-          if (info) candidates = [info];
-        }
-        // Fallback: if no panel in this guild, use the command user's own scripts
+        // Prefer the command user's own scripts so multi-script owners get a dropdown.
+        // If they have none, fall back to this server's panel script.
+        let candidates = await getScriptsByOwner(interaction.user.id);
         if (candidates.length === 0) {
-          candidates = await getScriptsByOwner(interaction.user.id);
+          const panel = getGuildPanelScript(interaction.guildId);
+          if (panel && panel.scriptId) {
+            const info = await fetchScriptById(panel.scriptId);
+            if (info) candidates = [info];
+          }
         }
         if (candidates.length === 0) {
           await interaction.editReply({
-            content: "❌ This server has no script panel, and you don't have any scripts.\nThe panel owner should run `/setuppanel` first, or upload a script on the website."
+            content: "❌ You don't have any scripts, and this server has no script panel.\nUpload a script on the website, then run `/setuppanel`."
           }).catch(() => {});
           return true;
         }
@@ -594,7 +594,7 @@ const extras = createExtras({
 const commands = [
   new SlashCommandBuilder()
     .setName("setuppanel")
-    .setDescription("Setup panel embed with script selection (Free: 2 max, Premium: 5 max)")
+    .setDescription("Setup panel embed with script selection (Free: 2 max, Premium: 10 max)")
     .addStringOption(o => o.setName("title").setDescription("Title").setRequired(true))
     .addStringOption(o => o.setName("description").setDescription("Description").setRequired(true)),
 
@@ -1030,8 +1030,24 @@ async function handleInteraction(interaction) {
           });
           const keys = readKeys();
           writeKeys(keys.filter(k => k.scriptId !== scriptId));
+          // Clear any guild panels that pointed at this script (fixes stuck panel slots)
+          const cfg = readConfig();
+          let panelsCleared = 0;
+          for (const gid of Object.keys(cfg)) {
+            const g = cfg[gid];
+            if (g && g.panelScriptId === scriptId) {
+              delete g.panelScriptId;
+              delete g.panelOwnerId;
+              delete g.panelChannelId;
+              panelsCleared++;
+            }
+          }
+          if (panelsCleared > 0) writeConfig(cfg);
           clearCache(interaction.user.id);
-          return interaction.editReply({ content: "✅ Script and all its keys have been permanently deleted!" }).catch(() => {});
+          return interaction.editReply({
+            content: `✅ Script and all its keys have been permanently deleted!` +
+              (panelsCleared ? `\n🧹 Cleared **${panelsCleared}** panel slot(s) that used this script.` : "")
+          }).catch(() => {});
         } catch (err) {
           console.error(`❌ deletescript failed: ${describeAxiosError(err)}`);
           return interaction.editReply({ content: "❌ Failed to delete script." }).catch(() => {});
@@ -1187,10 +1203,10 @@ async function handleInteraction(interaction) {
           const { title, description } = tempData;
           panelTempData.delete(interaction.user.id);
 
-          const limitInfo = await checkPanelLimit(interaction.user.id);
+          const limitInfo = await checkPanelLimit(interaction.user.id, interaction.guildId);
           if (!limitInfo.canCreate) {
             return interaction.editReply({
-              content: `❌ **Panel limit reached!** (${limitInfo.count}/${limitInfo.max})`
+              content: `❌ **Panel limit reached!** (${limitInfo.count}/${limitInfo.max})\nRe-run in a server where you already have a panel to replace it.`
             }).catch(() => {});
           }
 
@@ -1199,8 +1215,9 @@ async function handleInteraction(interaction) {
           if (!selectedScript) return interaction.editReply({ content: "❌ Script not found or not yours!" }).catch(() => {});
 
           await sendPanelEmbed(interaction.channel, title, description, scriptId, selectedScript.name, interaction.user.id, interaction.guildId);
+          const used1 = limitInfo.replacing ? limitInfo.count : Math.min(limitInfo.count + 1, limitInfo.max);
           return interaction.editReply({
-            content: `✅ Panel created with script: **${selectedScript.name}**!\nPanel usage: **${limitInfo.count + 1}/${limitInfo.max}**`
+            content: `✅ Panel ${limitInfo.replacing ? "updated" : "created"} with script: **${selectedScript.name}**!\nPanel usage: **${used1}/${limitInfo.max}**`
           }).catch(() => {});
         } catch {
           return interaction.editReply({ content: "❌ Failed to create panel." }).catch(() => {});
@@ -1484,8 +1501,8 @@ async function handleInteraction(interaction) {
             `${statusText}\n\n` +
             `**Free plan:** 2 scripts, 2 panels, lifetime whitelist, key system & HWID lock.\n\n` +
             `**Unlock Premium features:**\n` +
-            `• 📜 **5 scripts** (Free: 2)\n` +
-            `• 🎛️ \`/setuppanel\` — up to **5 panels** (Free: 2 max)\n` +
+            `• 📜 **10 scripts** (Free: 2)\n` +
+            `• 🎛️ \`/setuppanel\` — up to **10 panels** (Free: 2 max)\n` +
             `• 🎮 \`/freemode\` — Enable free mode on your scripts\n` +
             `• 🚫 \`/blacklistrole\` — Blacklist roles from using your scripts\n` +
             `• 🔓 \`/unblacklist role\` — Unblacklist roles\n` +
@@ -1608,7 +1625,7 @@ async function handleInteraction(interaction) {
         }
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
 
-        const limitInfo = await checkPanelLimit(interaction.user.id);
+        const limitInfo = await checkPanelLimit(interaction.user.id, interaction.guildId);
         if (!limitInfo.canCreate) {
           return interaction.editReply({
             content:
@@ -1616,8 +1633,8 @@ async function handleInteraction(interaction) {
               `You currently have **${limitInfo.count}/${limitInfo.max}** panels.\n` +
               `Your tier: **${limitInfo.premium ? "👑 Premium" : "🆓 Free"}**\n\n` +
               (limitInfo.premium
-                ? `Premium users can create up to **5 panels**. Delete one with \`/deletescript\` or remove an old panel.`
-                : `Free users can only create up to **2 panels**.\nUpgrade to Premium to increase the limit to **5 panels**.`),
+                ? `Premium users can create up to **10 panels**. Re-run \`/setuppanel\` in a server that already has your panel to replace it, or clear an old panel.`
+                : `Free users can only create up to **2 panels**.\nUpgrade to Premium to increase the limit to **10 panels**.`),
             components: limitInfo.premium ? [] : [new ActionRowBuilder().addComponents(
               new ButtonBuilder().setLabel("💎 Buy Premium").setStyle(ButtonStyle.Link).setURL(PREMIUM_INFO.discord)
             )]
@@ -1632,8 +1649,9 @@ async function handleInteraction(interaction) {
 
           if (myScripts.length === 1) {
             await sendPanelEmbed(interaction.channel, title, description, myScripts[0].id, myScripts[0].name, interaction.user.id, interaction.guildId);
+            const used0 = limitInfo.replacing ? limitInfo.count : Math.min(limitInfo.count + 1, limitInfo.max);
             return interaction.editReply({
-              content: `✅ Panel created with script: **${myScripts[0].name}**!\nPanel usage: **${limitInfo.count + 1}/${limitInfo.max}**`
+              content: `✅ Panel ${limitInfo.replacing ? "updated" : "created"} with script: **${myScripts[0].name}**!\nPanel usage: **${used0}/${limitInfo.max}**`
             }).catch(() => {});
           }
 
