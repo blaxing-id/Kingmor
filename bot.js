@@ -202,6 +202,24 @@ function hasPermission(member, guildId) {
   return member.roles.cache.has(roleId);
 }
 
+/** Validate a role from slash options. Returns { ok, role, error }. */
+function validateRoleOption(interaction, role, { allowEveryone = false } = {}) {
+  if (!role || !role.id) {
+    return { ok: false, role: null, error: "❌ Please select a valid role from **this server**." };
+  }
+  if (!allowEveryone && interaction.guild && String(role.id) === String(interaction.guildId)) {
+    return { ok: false, role: null, error: "❌ You cannot use @everyone for this command." };
+  }
+  if (role.managed) {
+    return { ok: false, role: null, error: "❌ That role is managed by a bot/integration and cannot be used." };
+  }
+  // Ensure role belongs to this guild when possible
+  if (interaction.guild && role.guild && role.guild.id !== interaction.guild.id) {
+    return { ok: false, role: null, error: "❌ That role is not from this server." };
+  }
+  return { ok: true, role, error: null };
+}
+
 function getGuildPanelScript(guildId) {
   const cfg = readConfig()[guildId] || {};
   const scriptId = cfg.panelScriptId;
@@ -418,8 +436,13 @@ const createExtras = function createExtras(ctx) {
     }
 
     // role
-    const role = await interaction.guild.roles.fetch(targetId);
-    if (!role) return "❌ Role not found.";
+    let role = null;
+    try {
+      role = await interaction.guild.roles.fetch(targetId);
+    } catch (e) {
+      return "❌ Role not found or invalid in this server.";
+    }
+    if (!role) return "❌ Role not found or invalid in this server.";
     await interaction.guild.members.fetch();
     const members = role.members.filter(m => !m.user.bot);
     let added = 0, skipped = 0;
@@ -504,12 +527,20 @@ const createExtras = function createExtras(ctx) {
         const days = interaction.options.getInteger("days");
 
         if (!targetUser && !targetRole) {
-          await interaction.editReply({ content: "❌ Select a user or role!" }).catch(() => {});
+          await interaction.editReply({ content: "❌ Select a **user** or a **role**!" }).catch(() => {});
           return true;
         }
-        if (days < 0) {
+        if (days === null || days < 0) {
           await interaction.editReply({ content: "❌ Days must be 0 (lifetime) or more." }).catch(() => {});
           return true;
+        }
+
+        if (targetRole) {
+          const checked = validateRoleOption(interaction, targetRole);
+          if (!checked.ok) {
+            await interaction.editReply({ content: checked.error }).catch(() => {});
+            return true;
+          }
         }
 
         const targetType = targetUser ? "user" : "role";
@@ -1579,12 +1610,20 @@ async function handleInteraction(interaction) {
         if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
           return interaction.reply({ content: "❌ Admin only.", ephemeral: true }).catch(() => {});
         }
-        const role = interaction.options.getRole("role");
+        const rawRole = interaction.options.getRole("role");
+        const checked = validateRoleOption(interaction, rawRole);
+        if (!checked.ok) {
+          return interaction.reply({ content: checked.error, ephemeral: true }).catch(() => {});
+        }
+        const role = checked.role;
         const cfg = readConfig();
         if (!cfg[interaction.guildId]) cfg[interaction.guildId] = {};
-        cfg[interaction.guildId].whitelistRole = role.id;
+        cfg[interaction.guildId].whitelistRole = String(role.id);
         writeConfig(cfg);
-        return interaction.reply({ content: `✅ Role <@&${role.id}> is now the bot admin role.`, ephemeral: true }).catch(() => {});
+        return interaction.reply({
+          content: `✅ Role **${role.name}** is now the bot admin role.`,
+          ephemeral: true
+        }).catch(() => {});
       }
 
       if (commandName === "setbuyerrole") {
@@ -1593,7 +1632,13 @@ async function handleInteraction(interaction) {
         }
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
         try {
-          const role = interaction.options.getRole("role");
+          const rawRole = interaction.options.getRole("role");
+          const checked = validateRoleOption(interaction, rawRole);
+          if (!checked.ok) {
+            return interaction.editReply({ content: checked.error }).catch(() => {});
+          }
+          const role = checked.role;
+
           const myScripts = await getScriptsByOwner(interaction.user.id);
           if (myScripts.length === 0) return interaction.editReply({ content: "❌ You don't have any scripts yet." }).catch(() => {});
 
@@ -1601,21 +1646,26 @@ async function handleInteraction(interaction) {
             const cfg = readConfig();
             if (!cfg[interaction.guildId]) cfg[interaction.guildId] = {};
             if (!cfg[interaction.guildId].buyerRoles) cfg[interaction.guildId].buyerRoles = {};
-            cfg[interaction.guildId].buyerRoles[myScripts[0].id] = role.id;
+            cfg[interaction.guildId].buyerRoles[myScripts[0].id] = String(role.id);
             writeConfig(cfg);
-            return interaction.editReply({ content: `✅ Buyer role <@&${role.id}> has been set for **${myScripts[0].name}**!` }).catch(() => {});
+            return interaction.editReply({
+              content: `✅ Buyer role **${role.name}** (<@&${role.id}>) has been set for **${myScripts[0].name}**!`
+            }).catch(() => interaction.editReply({
+              content: `✅ Buyer role **${role.name}** has been set for **${myScripts[0].name}**!`
+            }).catch(() => {}));
           }
 
-          buyerRoleTempData.set(interaction.user.id, { roleId: role.id });
+          buyerRoleTempData.set(interaction.user.id, { roleId: String(role.id), roleName: role.name });
           const select = new StringSelectMenuBuilder()
             .setCustomId("setbuyerrole_select").setPlaceholder("Select a script...").addOptions(scriptSelectOptions(myScripts));
 
           return interaction.editReply({
-            content: `Select a script to assign buyer role <@&${role.id}>:`,
+            content: `Select a script to assign buyer role **${role.name}**:`,
             components: [new ActionRowBuilder().addComponents(select)]
           }).catch(() => {});
-        } catch {
-          return interaction.editReply({ content: "❌ Failed to set buyer role." }).catch(() => {});
+        } catch (err) {
+          console.error("setbuyerrole error:", err);
+          return interaction.editReply({ content: "❌ Failed to set buyer role. Make sure you picked a real server role." }).catch(() => {});
         }
       }
 
