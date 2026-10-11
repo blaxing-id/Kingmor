@@ -32,7 +32,7 @@ const BOT_2_TAG = process.env.BOT_2_TAG || "Kingmor#0002";
 const BOT_2_AVATAR = process.env.BOT_2_AVATAR || "https://cdn.discordapp.com/embed/avatars/1.png";
 const PREMIUM_PRICE_IDR = "Rp 20.000";
 const PREMIUM_PRICE_USD = "$2";
-const SCRIPT_LIMIT = { free: 2, premium: 5 };
+const SCRIPT_LIMIT = { free: 2, premium: 10 };
 
 fs.mkdirSync(SCRIPTS_DIR, { recursive: true });
 
@@ -478,7 +478,7 @@ function planCards(currentUser) {
     <ul>
       <li><b>Everything in Free</b></li>
       <li><b>${SCRIPT_LIMIT.premium} scripts</b></li>
-      <li><code>/setuppanel</code> up to 5 panels</li>
+      <li><code>/setuppanel</code> up to 10 panels</li>
       <li><code>/freemode</code> — let anyone run a script without a key</li>
       <li><code>/blacklistrole</code> &amp; <code>/unblacklist role</code></li>
       <li><code>/cooldownhwid</code> — custom HWID reset cooldown</li>
@@ -921,11 +921,20 @@ app.get("/api/panels/count", requireInternalSecret, (req, res) => {
     }
   }
   const premium = isPremium(ownerId);
-  const max = premium ? 5 : 2;
+  const max = premium ? 10 : 2;
+  // Optional: guildId query — if this guild already has a panel owned by user, replacing is free
+  const guildId = req.query.guildId ? String(req.query.guildId) : null;
+  let replacing = false;
+  if (guildId && botConfig[guildId]) {
+    const g = botConfig[guildId];
+    if (g && String(g.panelOwnerId) === String(ownerId) && g.panelScriptId) {
+      replacing = true;
+    }
+  }
   res.json({
-    count, max, premium,
+    count, max, premium, replacing,
     remaining: Math.max(0, max - count),
-    canCreate: count < max,
+    canCreate: replacing || count < max,
   });
 });
 
@@ -1540,7 +1549,7 @@ app.get("/", (req, res) => {
 
   <section class="section" style="border-top:none;padding-top:0">
     <div class="cta-band">
-      <div><h2>Need more room?</h2><p>Premium gives you ${SCRIPT_LIMIT.premium} scripts, ${5} panels, free mode and more. Redeem a key in seconds.</p></div>
+      <div><h2>Need more room?</h2><p>Premium gives you ${SCRIPT_LIMIT.premium} scripts, ${10} panels, free mode and more. Redeem a key in seconds.</p></div>
       <div class="hero-cta" style="margin:0"><a class="btn btn-gold" href="/pricing">Compare plans</a><a class="btn btn-ghost" href="/redeem">Redeem a key</a></div>
     </div>
   </section>
