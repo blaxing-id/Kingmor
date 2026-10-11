@@ -33,6 +33,8 @@ const BOT_2_AVATAR = process.env.BOT_2_AVATAR || "https://cdn.discordapp.com/emb
 const PREMIUM_PRICE_IDR = "Rp 20.000";
 const PREMIUM_PRICE_USD = "$2";
 const SCRIPT_LIMIT = { free: 2, premium: 10 };
+/** Max Lua source size in characters (~25MB). Keep under typical proxy/body limits. */
+const MAX_SOURCE_CHARS = 25 * 1024 * 1024;
 
 fs.mkdirSync(SCRIPTS_DIR, { recursive: true });
 
@@ -44,7 +46,8 @@ if (!fs.existsSync(PREMIUM_FILE)) fs.writeFileSync(PREMIUM_FILE, "{}", "utf8");
 if (!fs.existsSync(PREMIUM_KEYS_FILE)) fs.writeFileSync(PREMIUM_KEYS_FILE, "[]", "utf8");
 if (!fs.existsSync(HWID_COOLDOWN_FILE)) fs.writeFileSync(HWID_COOLDOWN_FILE, "{}", "utf8");
 
-app.use(express.json({ limit: "15mb" }));
+app.use(express.json({ limit: "30mb" }));
+app.use(express.urlencoded({ extended: true, limit: "30mb" }));
 
 // ==================== STATIC FILES ====================
 app.use(express.static(PUBLIC_DIR, {
@@ -794,7 +797,7 @@ app.post("/api/scripts", requireAuth, (req, res) => {
   const { name, source, guildId } = req.body;
   if (!name || typeof name !== "string") return res.status(400).json({ error: "Script name is required" });
   if (!source || typeof source !== "string") return res.status(400).json({ error: "Lua source is required" });
-  if (source.length > 10 * 1024 * 1024) return res.status(413).json({ error: "File too large. Maximum 10MB." });
+  if (source.length > MAX_SOURCE_CHARS) return res.status(413).json({ error: `File too large. Maximum ${Math.floor(MAX_SOURCE_CHARS / (1024 * 1024))}MB.` });
 
   const userId = String(req.session.user.id);
   const db = readDB();
@@ -852,8 +855,8 @@ app.put("/api/scripts/:id", requireAuth, (req, res) => {
     if (typeof source !== "string" || !source.trim()) {
       return res.status(400).json({ error: "Lua source cannot be empty" });
     }
-    if (source.length > 10 * 1024 * 1024) {
-      return res.status(413).json({ error: "File too large. Maximum 10MB." });
+    if (source.length > MAX_SOURCE_CHARS) {
+      return res.status(413).json({ error: `File too large. Maximum ${Math.floor(MAX_SOURCE_CHARS / (1024 * 1024))}MB.` });
     }
     const filepath = path.join(SCRIPTS_DIR, script.filename);
     fs.writeFileSync(filepath, source, "utf8");
@@ -1342,13 +1345,26 @@ end
 ${sourceCode}`;
   }
 
-  const userAgent = req.headers["user-agent"] || "";
-  const isRobloxRequest = userAgent.includes("Roblox") || userAgent.includes("Lua")
-    || userAgent.includes("Synapse") || userAgent.includes("Krnl")
-    || userAgent.includes("Fluxus") || userAgent.includes("Hydrogen")
-    || userAgent.includes("ScriptWare") || userAgent.includes("Electron");
+  const userAgent = (req.headers["user-agent"] || "").toLowerCase();
+  const accept = (req.headers.accept || "").toLowerCase();
+  const hasKey = typeof req.query.key === "string";
+  const hasUid = typeof req.query.uid === "string";
+  // Many executors send empty/generic UA — treat as loader when:
+  // - key/uid query is present, OR
+  // - Accept is not browser HTML, OR
+  // - known executor UA
+  const isKnownExecutor = userAgent.includes("roblox") || userAgent.includes("lua")
+    || userAgent.includes("synapse") || userAgent.includes("krnl")
+    || userAgent.includes("fluxus") || userAgent.includes("hydrogen")
+    || userAgent.includes("scriptware") || userAgent.includes("electron")
+    || userAgent.includes("wave") || userAgent.includes("solara")
+    || userAgent.includes("xeno") || userAgent.includes("seliware")
+    || userAgent.includes("delta") || userAgent.includes("codex")
+    || userAgent.includes("executor") || userAgent.includes("httpget");
+  const isBrowserNav = accept.includes("text/html") && !hasKey && !hasUid && !req.query.raw;
+  const isLoaderRequest = !isBrowserNav || isKnownExecutor || hasKey || hasUid || req.query.raw === "1";
 
-  if (isRobloxRequest) {
+  if (isLoaderRequest) {
     if (!script.enabled) {
       return res.status(200).type("text/plain").set("Cache-Control", "no-store")
         .send(kickPlayer("Script Disabled"));
@@ -1364,7 +1380,13 @@ ${sourceCode}`;
 
     if (isFreeMode) {
       const wrapped = buildHwidWrapper(sourceCode, "", true);
-      return res.status(200).type("text/plain").set("Cache-Control", "no-store").send(wrapped);
+      res.status(200);
+      res.set({
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Content-Length": Buffer.byteLength(wrapped, "utf8"),
+      });
+      return res.end(wrapped, "utf8");
     }
 
     const providedKey = (req.query.key || "").toLowerCase().trim();
@@ -1387,7 +1409,13 @@ ${sourceCode}`;
     }
 
     const wrapped = buildHwidWrapper(sourceCode, providedKey, false);
-    return res.status(200).type("text/plain").set("Cache-Control", "no-store").send(wrapped);
+    res.status(200);
+    res.set({
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store, no-cache, must-revalidate",
+      "Content-Length": Buffer.byteLength(wrapped, "utf8"),
+    });
+    return res.end(wrapped, "utf8");
   }
 
   const uid = req.query.uid || null;
@@ -1760,12 +1788,12 @@ app.get("/dashboard", requireAuth, (req, res) => {
 
   const script = `
 var editingId=null;
-var MAX=10*1024*1024;
+var MAX=25*1024*1024;
 function readFileInto(input,nameEl,onText){
   var f=input.files[0];if(!f)return;
   var n=f.name.toLowerCase();
   if(!n.endsWith('.lua')&&!n.endsWith('.txt')){toast('Only .lua or .txt files are allowed','err');input.value='';return;}
-  if(f.size>MAX){toast('Maximum file size is 10MB','err');input.value='';return;}
+  if(f.size>MAX){toast('Maximum file size is 25MB','err');input.value='';return;}
   nameEl.textContent=f.name;
   var rd=new FileReader();rd.onload=function(e){onText(e.target.result,f.name);};rd.readAsText(f);
 }
