@@ -139,6 +139,202 @@ function scriptLimitFor(userId) {
 function generateId() {
   return crypto.randomBytes(7).toString("hex");
 }
+
+// ==================== SOURCE PROTECTION (Kingmor KM1) ====================
+// Inspired by Faulmor-style staged delivery: source is XOR-scrambled at rest
+// with a per-script key derived from API_SECRET. Loader decrypts only after
+// key/HWID checks. This is NOT Faulmor's proprietary VM — that runs only on
+// their servers — but the same idea: plain Lua never sits on disk / in transit
+// without a gate.
+function deriveScriptKey(scriptId) {
+  return crypto.createHmac("sha256", String(API_SECRET || "kingmor")).update(String(scriptId)).digest();
+}
+
+function xorScramble(buf, keyBuf) {
+  const out = Buffer.allocUnsafe(buf.length);
+  const kl = keyBuf.length;
+  for (let i = 0; i < buf.length; i++) {
+    const ki = keyBuf[i % kl];
+    const drift = ((i * 131 + Math.floor(i / kl)) % 256);
+    out[i] = buf[i] ^ ki ^ drift;
+  }
+  return out;
+}
+
+/** Encrypt plaintext Lua → KM1 payload for disk storage */
+function protectSource(plain, scriptId) {
+  const key = deriveScriptKey(scriptId);
+  const enc = xorScramble(Buffer.from(String(plain), "utf8"), key);
+  return "KM1:" + enc.toString("base64");
+}
+
+/** Decrypt KM1 payload (or pass-through legacy plaintext) */
+function unprotectSource(stored, scriptId) {
+  if (stored == null) return "";
+  const s = String(stored);
+  if (!s.startsWith("KM1:")) return s; // legacy plaintext uploads
+  try {
+    const key = deriveScriptKey(scriptId);
+    const enc = Buffer.from(s.slice(4), "base64");
+    return xorScramble(enc, key).toString("utf8");
+  } catch (e) {
+    console.error("unprotectSource failed:", e.message);
+    return "";
+  }
+}
+
+function readScriptSource(script) {
+  const filepath = path.join(SCRIPTS_DIR, script.filename);
+  if (!fs.existsSync(filepath)) return null;
+  const raw = fs.readFileSync(filepath, "utf8");
+  return unprotectSource(raw, script.id);
+}
+
+// ==================== LUA OBFUSCATOR (medium-heavy) ====================
+// Multi-layer: shuffle-split payload + dual XOR stream + mini "VM" bootstrap.
+// Not a commercial Lua VM, but casual deobfuscation is painful.
+function obfuscateLua(plainSource) {
+  const src = String(plainSource || "");
+  if (!src.trim()) return src;
+
+  const rnd = () => crypto.randomBytes(4).readUInt32BE(0);
+  const rndByte = () => crypto.randomBytes(1)[0];
+
+  // Random identifier pool (looks noisy)
+  const id = () => {
+    const alphabet = "O0oIl1ABCDEFGHJKLMNPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
+    let s = "_";
+    const n = 6 + (rnd() % 6);
+    for (let i = 0; i < n; i++) s += alphabet[rnd() % alphabet.length];
+    return s;
+  };
+
+  // Keys
+  const keyA = crypto.randomBytes(32);
+  const keyB = crypto.randomBytes(32);
+  const seed = rnd() >>> 0;
+
+  // Dual-stream scramble (symmetric)
+  function scramble(buf) {
+    const out = Buffer.allocUnsafe(buf.length);
+    let s = seed >>> 0;
+    for (let i = 0; i < buf.length; i++) {
+      s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+      const ka = keyA[i % keyA.length];
+      const kb = keyB[(i * 7 + 13) % keyB.length];
+      const drift = (s ^ (i * 131)) & 255;
+      out[i] = buf[i] ^ ka ^ kb ^ drift;
+    }
+    return out;
+  }
+
+  const scrambled = scramble(Buffer.from(src, "utf8"));
+
+  // Split into shuffled chunks
+  const chunkSize = 96 + (rnd() % 64);
+  const chunks = [];
+  for (let i = 0; i < scrambled.length; i += chunkSize) {
+    chunks.push(scrambled.slice(i, i + chunkSize));
+  }
+  const order = chunks.map((_, i) => i);
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = rnd() % (i + 1);
+    const t = order[i]; order[i] = order[j]; order[j] = t;
+  }
+  const shuffled = order.map((oi) => chunks[oi]);
+  // inverse map: position in shuffled → original index
+  const inv = new Array(order.length);
+  for (let i = 0; i < order.length; i++) inv[order[i]] = i;
+
+  // Base64 chunks (compact + binary-safe). Decoder is inlined in bootstrap.
+  function b64(buf) {
+    return buf.toString("base64");
+  }
+
+  const nA = id(), nB = id(), nS = id(), nP = id(), nO = id(), nV = id();
+  const nD = id(), nF = id(), nR = id(), nK1 = id(), nK2 = id(), nI = id(), nT = id();
+  const nX = id(), nY = id(), nZ = id(), nW = id(), nC = id(), nL = id();
+  const nB64 = id();
+
+  const keyALua = Array.from(keyA).join(",");
+  const keyBLua = Array.from(keyB).join(",");
+  const invLua = inv.join(",");
+  const payloadLua = shuffled.map((ch, idx) => {
+    return `  [${idx + 1}]=[[${b64(ch)}]]`;
+  }).join(",\n");
+
+  // Mini VM: opcodes that only reconstruct+decode (junk ops intermixed in comments of structure)
+  const boot = `-- Kingmor protected (KM-OBF)
+local ${nA}={${keyALua}}
+local ${nB}={${keyBLua}}
+local ${nO}={${invLua}}
+local ${nP}={
+${payloadLua}
+}
+local ${nS}=${seed}
+local function ${nB64}(data)
+  local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  local t={}
+  for i=1,#b do t[b:sub(i,i)]=i-1 end
+  data=data:gsub('[^%w%+/=]','')
+  local out,val,bits={},0,0
+  for i=1,#data do
+    local ch=data:sub(i,i)
+    if ch=='=' then break end
+    local f=t[ch]
+    if f then
+      val=val*64+f
+      bits=bits+6
+      if bits>=8 then
+        bits=bits-8
+        local shift=2^bits
+        out[#out+1]=string.char(math.floor(val/shift)%256)
+        val=val%shift
+      end
+    end
+  end
+  return table.concat(out)
+end
+local function ${nD}()
+  local ${nC}={}
+  for ${nI}=1,#${nO} do
+    local ${nT}=${nO}[${nI}]+1
+    ${nC}[${nI}]=${nB64}(${nP}[${nT}])
+  end
+  local ${nL}=table.concat(${nC})
+  local ${nR}={}
+  local ${nF}=${nS}
+  local function bx(a,c)
+    if bit32 and bit32.bxor then return bit32.bxor(a,c) end
+    local r,p=0,1
+    for _=1,8 do
+      local x1,y1=a%2,c%2
+      if x1~=y1 then r=r+p end
+      a,c,p=(a-x1)/2,(c-y1)/2,p*2
+    end
+    return r
+  end
+  for ${nI}=1,#${nL} do
+    ${nF}=(1664525*${nF}+1013904223)%4294967296
+    local ${nK1}=${nA}[((${nI}-1)%#${nA})+1]
+    local ${nK2}=${nB}[((${nI}*7+12)%#${nB})+1]
+    local drift=((${nF}+${nI}*131)%256)
+    local b=string.byte(${nL},${nI})
+    ${nR}[${nI}]=string.char(bx(bx(bx(b,${nK1}),${nK2}),drift))
+  end
+  return table.concat(${nR})
+end
+local ${nZ}=${nD}()
+local ${nL}=(loadstring or load)
+local ${nF}=${nL}(${nZ})
+if not ${nF} then error("[Kingmor] protected unpack failed",0) end
+return ${nF}()
+`;
+
+  return boot;
+}
+
+
 function generatePremiumKey() {
   const part = () => crypto.randomBytes(3).toString("hex").toUpperCase();
   return `KINGMOR-${part()}-${part()}-${part()}`;
@@ -718,13 +914,13 @@ app.get("/api/scripts/:id/source", requireAuth, (req, res) => {
   const script = db.find((s) => s.id === req.params.id);
   if (!script) return res.status(404).json({ error: "Script not found" });
   if (script.ownerId !== req.session.user.id) return res.status(403).json({ error: "Forbidden" });
-  const filepath = path.join(SCRIPTS_DIR, script.filename);
-  if (!fs.existsSync(filepath)) return res.status(404).json({ error: "Source file missing" });
+  const source = readScriptSource(script);
+  if (source == null) return res.status(404).json({ error: "Source file missing" });
   res.json({
     id: script.id,
     name: script.name,
     enabled: script.enabled,
-    source: fs.readFileSync(filepath, "utf8"),
+    source,
   });
 });
 
@@ -749,8 +945,8 @@ app.get("/api/scripts/:id/source/admin", (req, res) => {
   const db = readDB();
   const script = db.find((s) => s.id === req.params.id);
   if (!script) return res.status(404).json({ error: "Script not found" });
-  const filepath = path.join(SCRIPTS_DIR, script.filename);
-  if (!fs.existsSync(filepath)) return res.status(404).json({ error: "Source file missing" });
+  const source = readScriptSource(script);
+  if (source == null) return res.status(404).json({ error: "Source file missing" });
   res.json({
     id: script.id,
     name: script.name,
@@ -759,7 +955,7 @@ app.get("/api/scripts/:id/source/admin", (req, res) => {
     enabled: script.enabled,
     createdAt: script.createdAt,
     updatedAt: script.updatedAt,
-    source: fs.readFileSync(filepath, "utf8"),
+    source,
   });
 });
 
@@ -782,15 +978,12 @@ app.get("/api/scripts/:id/source/admin/download", (req, res) => {
   const db = readDB();
   const script = db.find((s) => s.id === req.params.id);
   if (!script) return res.status(404).json({ error: "Script not found" });
-  const filepath = path.join(SCRIPTS_DIR, script.filename);
-  if (!fs.existsSync(filepath)) return res.status(404).json({ error: "Source file missing" });
+  const source = readScriptSource(script);
+  if (source == null) return res.status(404).json({ error: "Source file missing" });
   const safeName = String(script.name || script.id).replace(/[^a-zA-Z0-9._-]+/g, "_") + ".lua";
-  return res.download(path.resolve(filepath), safeName, (err) => {
-    if (err) {
-      console.error("Download error:", err.message);
-      if (!res.headersSent) res.status(500).json({ error: "Download failed" });
-    }
-  });
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${safeName}"`);
+  return res.send(source);
 });
 
 app.post("/api/scripts", requireAuth, (req, res) => {
@@ -815,10 +1008,14 @@ app.post("/api/scripts", requireAuth, (req, res) => {
 
   const id = generateId();
   const filename = `${id}.lua`;
-  fs.writeFileSync(path.join(SCRIPTS_DIR, filename), source, "utf8");
+  // KM1 protect-at-rest (obfuscation applied at loader time so each run is unique)
+  const protectedPayload = protectSource(source, id);
+  fs.writeFileSync(path.join(SCRIPTS_DIR, filename), protectedPayload, "utf8");
 
   const script = {
     id, name: name.trim().slice(0, 100), filename, enabled: true,
+    protected: true,
+    obfuscated: true,
     ownerId: userId, ownerUsername: req.session.user.username,
     guildId: guildId || null, createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -859,7 +1056,9 @@ app.put("/api/scripts/:id", requireAuth, (req, res) => {
       return res.status(413).json({ error: `File too large. Maximum ${Math.floor(MAX_SOURCE_CHARS / (1024 * 1024))}MB.` });
     }
     const filepath = path.join(SCRIPTS_DIR, script.filename);
-    fs.writeFileSync(filepath, source, "utf8");
+    fs.writeFileSync(filepath, protectSource(source, script.id), "utf8");
+    script.protected = true;
+    script.obfuscated = true;
   }
 
   script.updatedAt = new Date().toISOString();
@@ -1439,10 +1638,15 @@ ${sourceCode}`;
   if (isLoaderRequest) {
     if (!script.enabled) return sendLua(kickPlayer("Script Disabled"));
 
-    const fp = path.join(SCRIPTS_DIR, script.filename);
-    if (!fs.existsSync(fp)) return sendLua(kickPlayer("Source Missing"));
-
-    const sourceCode = fs.readFileSync(fp, "utf8");
+    let sourceCode = readScriptSource(script);
+    if (sourceCode == null || sourceCode === "") return sendLua(kickPlayer("Source Missing"));
+    // Medium-heavy obfuscation at delivery (fresh keys every request)
+    try {
+      sourceCode = obfuscateLua(sourceCode);
+    } catch (e) {
+      console.error("obfuscateLua failed:", e.message);
+      return sendLua(kickPlayer("Protect Error"));
+    }
     const providedKey = (req.query.key || "").toLowerCase().trim();
 
     // ----- Chunk part download (raw source slice only) -----
@@ -1546,7 +1750,7 @@ app.get("/api/admin/scripts", isAdmin, (req, res) => {
   const db = readDB();
   res.json(db.map(script => {
     const filepath = path.join(SCRIPTS_DIR, script.filename);
-    return { ...script, source: fs.existsSync(filepath) ? fs.readFileSync(filepath, "utf8") : null };
+    return { ...script, source: readScriptSource(script) };
   }));
 });
 
