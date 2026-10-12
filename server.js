@@ -197,86 +197,72 @@ function obfuscateLua(plainSource) {
   const src = String(plainSource || "");
   if (!src.trim()) return src;
 
-  const rnd = () => crypto.randomBytes(4).readUInt32BE(0);
-  const rndByte = () => crypto.randomBytes(1)[0];
-
-  // Random identifier pool (looks noisy)
+  const rndU32 = () => crypto.randomBytes(4).readUInt32BE(0) >>> 0;
   const id = () => {
-    const alphabet = "O0oIl1ABCDEFGHJKLMNPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
-    let s = "_";
-    const n = 6 + (rnd() % 6);
-    for (let i = 0; i < n; i++) s += alphabet[rnd() % alphabet.length];
+    const alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
+    let s = "_k";
+    for (let i = 0; i < 8; i++) s += alphabet[rndU32() % alphabet.length];
     return s;
   };
 
-  // Keys
-  const keyA = crypto.randomBytes(32);
-  const keyB = crypto.randomBytes(32);
-  const seed = rnd() >>> 0;
+  const key = crypto.randomBytes(32);
+  const seed = rndU32();
 
-  // Dual-stream scramble (symmetric)
+  // MUST match Lua decoder exactly (0-based index i)
   function scramble(buf) {
     const out = Buffer.allocUnsafe(buf.length);
     let s = seed >>> 0;
     for (let i = 0; i < buf.length; i++) {
       s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
-      const ka = keyA[i % keyA.length];
-      const kb = keyB[(i * 7 + 13) % keyB.length];
-      const drift = (s ^ (i * 131)) & 255;
-      out[i] = buf[i] ^ ka ^ kb ^ drift;
+      const k = key[i & 31]; // key length 32
+      const drift = ((s & 255) ^ ((i * 131) & 255)) & 255;
+      out[i] = buf[i] ^ k ^ drift;
     }
     return out;
   }
 
-  const scrambled = scramble(Buffer.from(src, "utf8"));
+  const plainBuf = Buffer.from(src, "utf8");
+  const enc = scramble(plainBuf);
+  const b64payload = enc.toString("base64");
 
-  // Split into shuffled chunks
-  const chunkSize = 96 + (rnd() % 64);
-  const chunks = [];
-  for (let i = 0; i < scrambled.length; i += chunkSize) {
-    chunks.push(scrambled.slice(i, i + chunkSize));
-  }
-  const order = chunks.map((_, i) => i);
-  for (let i = order.length - 1; i > 0; i--) {
-    const j = rnd() % (i + 1);
-    const t = order[i]; order[i] = order[j]; order[j] = t;
-  }
-  const shuffled = order.map((oi) => chunks[oi]);
-  // inverse map: position in shuffled → original index
-  const inv = new Array(order.length);
-  for (let i = 0; i < order.length; i++) inv[order[i]] = i;
-
-  // Base64 chunks (compact + binary-safe). Decoder is inlined in bootstrap.
-  function b64(buf) {
-    return buf.toString("base64");
+  // Split base64 into pieces of ~200 chars (avoid huge single literal limits)
+  const pieceSize = 4000;
+  const pieces = [];
+  for (let i = 0; i < b64payload.length; i += pieceSize) {
+    pieces.push(b64payload.slice(i, i + pieceSize));
   }
 
-  const nA = id(), nB = id(), nS = id(), nP = id(), nO = id(), nV = id();
-  const nD = id(), nF = id(), nR = id(), nK1 = id(), nK2 = id(), nI = id(), nT = id();
-  const nX = id(), nY = id(), nZ = id(), nW = id(), nC = id(), nL = id();
-  const nB64 = id();
+  const nKey = id(), nSeed = id(), nParts = id(), nDec = id(), nB64 = id();
+  const nSrc = id(), nFn = id(), nI = id(), nS = id(), nK = id(), nD = id(), nB = id(), nOut = id();
+  const nBx = id(), nA = id(), nC = id(), nR = id(), nP = id(), nLoad = id();
+  const nOk = id(), nErr = id();
 
-  const keyALua = Array.from(keyA).join(",");
-  const keyBLua = Array.from(keyB).join(",");
-  const invLua = inv.join(",");
-  const payloadLua = shuffled.map((ch, idx) => {
-    return `  [${idx + 1}]=[[${b64(ch)}]]`;
-  }).join(",\n");
+  const keyLua = Array.from(key).join(",");
+  const partsLua = pieces.map((p, idx) => `  [${idx + 1}]=[=[${p}]=]`).join(",\n");
 
-  // Mini VM: opcodes that only reconstruct+decode (junk ops intermixed in comments of structure)
-  const boot = `-- Kingmor protected (KM-OBF)
-local ${nA}={${keyALua}}
-local ${nB}={${keyBLua}}
-local ${nO}={${invLua}}
-local ${nP}={
-${payloadLua}
+  // Use long-bracket [=[ ]=] so base64 never breaks the string
+  return `-- Kingmor KM-OBF
+local ${nKey}={${keyLua}}
+local ${nSeed}=${seed}
+local ${nParts}={
+${partsLua}
 }
-local ${nS}=${seed}
+local function ${nBx}(a,c)
+  a=a%256;c=c%256
+  if bit32 and bit32.bxor then return bit32.bxor(a,c) end
+  local r,p=0,1
+  for _=1,8 do
+    local x,y=a%2,c%2
+    if x~=y then r=r+p end
+    a,c,p=(a-x)/2,(c-y)/2,p*2
+  end
+  return r
+end
 local function ${nB64}(data)
-  local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  local alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
   local t={}
-  for i=1,#b do t[b:sub(i,i)]=i-1 end
-  data=data:gsub('[^%w%+/=]','')
+  for i=1,#alphabet do t[alphabet:sub(i,i)]=i-1 end
+  data=tostring(data or ''):gsub('%s',''):gsub('[^A-Za-z0-9%+/=]','')
   local out,val,bits={},0,0
   for i=1,#data do
     local ch=data:sub(i,i)
@@ -287,52 +273,279 @@ local function ${nB64}(data)
       bits=bits+6
       if bits>=8 then
         bits=bits-8
-        local shift=2^bits
-        out[#out+1]=string.char(math.floor(val/shift)%256)
-        val=val%shift
+        local div=2^bits
+        out[#out+1]=string.char(math.floor(val/div)%256)
+        val=val%div
       end
     end
   end
   return table.concat(out)
 end
-local function ${nD}()
-  local ${nC}={}
-  for ${nI}=1,#${nO} do
-    local ${nT}=${nO}[${nI}]+1
-    ${nC}[${nI}]=${nB64}(${nP}[${nT}])
+local function ${nDec}()
+  local ${nS}=table.concat(${nParts})
+  local ${nB}=${nB64}(${nS})
+  local ${nOut}={}
+  local ${nR}=${nSeed}
+  for ${nI}=1,#${nB} do
+    ${nR}=(1664525*${nR}+1013904223)%4294967296
+    local ${nK}=${nKey}[((${nI}-1)%32)+1]
+    local ${nD}=${nBx}(${nR}%256,((${nI}-1)*131)%256)
+    local ${nA}=string.byte(${nB},${nI})
+    ${nOut}[${nI}]=string.char(${nBx}(${nBx}(${nA},${nK}),${nD}))
   end
-  local ${nL}=table.concat(${nC})
-  local ${nR}={}
-  local ${nF}=${nS}
-  local function bx(a,c)
-    if bit32 and bit32.bxor then return bit32.bxor(a,c) end
-    local r,p=0,1
-    for _=1,8 do
-      local x1,y1=a%2,c%2
-      if x1~=y1 then r=r+p end
-      a,c,p=(a-x1)/2,(c-y1)/2,p*2
-    end
-    return r
-  end
-  for ${nI}=1,#${nL} do
-    ${nF}=(1664525*${nF}+1013904223)%4294967296
-    local ${nK1}=${nA}[((${nI}-1)%#${nA})+1]
-    local ${nK2}=${nB}[((${nI}*7+12)%#${nB})+1]
-    local drift=((${nF}+${nI}*131)%256)
-    local b=string.byte(${nL},${nI})
-    ${nR}[${nI}]=string.char(bx(bx(bx(b,${nK1}),${nK2}),drift))
-  end
-  return table.concat(${nR})
+  return table.concat(${nOut})
 end
-local ${nZ}=${nD}()
-local ${nL}=(loadstring or load)
-local ${nF}=${nL}(${nZ})
-if not ${nF} then error("[Kingmor] protected unpack failed",0) end
-return ${nF}()
+local ${nSrc}=${nDec}()
+local ${nLoad}=loadstring or load
+if type(${nLoad})~='function' then error('[Kingmor] no loadstring',0) end
+local ${nFn},${nC}=${nLoad}(${nSrc})
+if not ${nFn} then
+  error('[Kingmor] unpack failed: '..tostring(${nC}),0)
+end
+local ${nOk},${nErr}=pcall(${nFn})
+if not ${nOk} then
+  error('[Kingmor] runtime: '..tostring(${nErr}),0)
+end
 `;
-
-  return boot;
 }
+
+// Ephemeral encrypted delivery for reliable large-script loading
+const DELIVER_DIR = path.join(DATA_DIR, "deliver");
+fs.mkdirSync(DELIVER_DIR, { recursive: true });
+
+function scrambleBuffer(buf, key, seed) {
+  const out = Buffer.allocUnsafe(buf.length);
+  let s = seed >>> 0;
+  for (let i = 0; i < buf.length; i++) {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    const k = key[i & 31];
+    const drift = ((s & 255) ^ ((i * 131) & 255)) & 255;
+    out[i] = buf[i] ^ k ^ drift;
+  }
+  return out;
+}
+
+function createDelivery(plainUtf8) {
+  const key = crypto.randomBytes(32);
+  const seed = crypto.randomBytes(4).readUInt32BE(0) >>> 0;
+  const plainBuf = Buffer.from(String(plainUtf8), "utf8");
+  const enc = scrambleBuffer(plainBuf, key, seed);
+  const token = crypto.randomBytes(16).toString("hex");
+  const meta = { seed, key: key.toString("base64"), len: enc.length, exp: Date.now() + 10 * 60 * 1000 };
+  fs.writeFileSync(path.join(DELIVER_DIR, token + ".bin"), enc);
+  fs.writeFileSync(path.join(DELIVER_DIR, token + ".json"), JSON.stringify(meta));
+  return { token, key, seed, len: enc.length };
+}
+
+function readDelivery(token) {
+  if (!token || !/^[a-f0-9]{32}$/.test(token)) return null;
+  const binPath = path.join(DELIVER_DIR, token + ".bin");
+  const metaPath = path.join(DELIVER_DIR, token + ".json");
+  if (!fs.existsSync(binPath) || !fs.existsSync(metaPath)) return null;
+  try {
+    const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+    if (Date.now() > meta.exp) {
+      try { fs.unlinkSync(binPath); } catch {}
+      try { fs.unlinkSync(metaPath); } catch {}
+      return null;
+    }
+    return { buf: fs.readFileSync(binPath), meta };
+  } catch {
+    return null;
+  }
+}
+
+/** Reliable loader: small bootstrap + encrypted chunk fetch + decode + loadstring */
+function buildSecureLoader(plain, userKey, freeModeFlag, base, scriptId) {
+  const { token, key, seed, len } = createDelivery(plain);
+  const CHUNK = 180 * 1024;
+  const parts = Math.max(1, Math.ceil(len / CHUNK));
+  const keyLua = Array.from(key).join(",");
+  const uk = String(userKey || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const keyQuery = freeModeFlag ? "" : "&key=" + encodeURIComponent(String(userKey || "").toLowerCase().trim());
+
+  // HWID gate (non-free requires valid key binding)
+  const hwidBlock = freeModeFlag
+    ? `pcall(function() httpget(${JSON.stringify(base + "/api/hwid/check?scriptId=" + scriptId + "&hwid=")} .. hwid) end)`
+    : `do
+  local ok,body = pcall(function()
+    return httpget(${JSON.stringify(base + "/api/hwid/check?scriptId=" + scriptId + "&key=" + String(userKey || "").toLowerCase().trim() + "&hwid=")} .. hwid)
+  end)
+  if not ok or type(body) ~= "string" or body == "" then
+    if lp then lp:Kick("[Kingmor] HWID Check Failed") end
+    return
+  end
+  local data = nil
+  pcall(function() data = HttpService:JSONDecode(body) end)
+  if type(data) ~= "table" or not data.valid then
+    local reason = (type(data) == "table" and data.reason) or "Invalid Key"
+    if lp then lp:Kick("[Kingmor] " .. tostring(reason)) end
+    return
+  end
+end`;
+
+  return `-- Kingmor secure loader v3
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local lp = Players.LocalPlayer
+local hwid = ""
+pcall(function()
+  hwid = tostring(game:GetService("RbxAnalyticsService"):GetClientId())
+end)
+
+-- Universal HTTP GET (executor request() first, then HttpGet)
+local function httpget(url)
+  local req = (type(request) == "function" and request)
+    or (type(http_request) == "function" and http_request)
+    or (type(syn) == "table" and type(syn.request) == "function" and syn.request)
+    or (type(http) == "table" and type(http.request) == "function" and http.request)
+    or (type(fluxus) == "table" and type(fluxus.request) == "function" and fluxus.request)
+  if req then
+    local ok, res = pcall(req, { Url = url, Method = "GET", Headers = { ["User-Agent"] = "KingmorLoader/3" } })
+    if ok and type(res) == "table" then
+      local body = res.Body or res.body or res.Data or res.data
+      if type(body) == "string" then return body end
+    end
+  end
+  if type(game.HttpGet) == "function" then
+    return game:HttpGet(url)
+  end
+  if type(HttpService.GetAsync) == "function" then
+    return HttpService:GetAsync(url, true)
+  end
+  error("no http transport")
+end
+
+${hwidBlock}
+
+local key = {${keyLua}}
+local seed = ${seed}
+local parts = ${parts}
+local token = "${token}"
+local baseUrl = ${JSON.stringify(base + "/api/loader/" + scriptId + ".lua?token=" + token + keyQuery + "&part=")}
+
+local function bx(a, c)
+  a = a % 256
+  c = c % 256
+  if bit32 and bit32.bxor then return bit32.bxor(a, c) end
+  local r, p = 0, 1
+  for _ = 1, 8 do
+    local x, y = a % 2, c % 2
+    if x ~= y then r = r + p end
+    a, c, p = (a - x) / 2, (c - y) / 2, p * 2
+  end
+  return r
+end
+
+local function b64dec(data)
+  local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  local lookup = {}
+  for i = 1, #alphabet do lookup[alphabet:sub(i, i)] = i - 1 end
+  data = tostring(data or ""):gsub("%s+", ""):gsub("[^A-Za-z0-9%+/=]", "")
+  local out, val, bits = {}, 0, 0
+  for i = 1, #data do
+    local ch = data:sub(i, i)
+    if ch == "=" then break end
+    local f = lookup[ch]
+    if f then
+      val = val * 64 + f
+      bits = bits + 6
+      if bits >= 8 then
+        bits = bits - 8
+        local div = 2 ^ bits
+        out[#out + 1] = string.char(math.floor(val / div) % 256)
+        val = val % div
+      end
+    end
+  end
+  return table.concat(out)
+end
+
+-- Download encrypted parts (retry 3x)
+local pieces = table.create and table.create(parts) or {}
+for i = 1, parts do
+  local url = baseUrl .. tostring(i)
+  local body, lastErr = nil, nil
+  for attempt = 1, 3 do
+    local ok, res = pcall(httpget, url)
+    if ok and type(res) == "string" and #res > 0 then
+      -- reject kick/html payloads
+      if res:sub(1, 15) == "-- Kingmor secur" then
+        lastErr = "got loader instead of part"
+      elseif res:find("LocalPlayer:Kick", 1, true) and #res < 500 then
+        local fn = (loadstring or load)(res)
+        if fn then pcall(fn) end
+        return
+      else
+        body = res
+        break
+      end
+    else
+      lastErr = tostring(res)
+    end
+    pcall(function() if task and task.wait then task.wait(0.35 * attempt) else wait(0.35 * attempt) end end)
+  end
+  if not body then
+    if lp then lp:Kick("[Kingmor] Download failed part " .. tostring(i)) end
+    warn("[Kingmor] part fail:", i, lastErr)
+    return
+  end
+  local okd, decoded = pcall(b64dec, body)
+  if not okd or type(decoded) ~= "string" then
+    if lp then lp:Kick("[Kingmor] Decode failed part " .. tostring(i)) end
+    return
+  end
+  pieces[i] = decoded
+end
+
+local enc = table.concat(pieces)
+if #enc == 0 then
+  if lp then lp:Kick("[Kingmor] Empty payload") end
+  return
+end
+
+-- Decrypt (matches server scrambleBuffer exactly)
+local outChunks, buf, bi = {}, {}, 0
+local s = seed
+local n = #enc
+for i = 1, n do
+  s = (1664525 * s + 1013904223) % 4294967296
+  local k = key[((i - 1) % 32) + 1]
+  local drift = bx(s % 256, ((i - 1) * 131) % 256)
+  local b = string.byte(enc, i)
+  bi = bi + 1
+  buf[bi] = string.char(bx(bx(b, k), drift))
+  if bi >= 8192 then
+    outChunks[#outChunks + 1] = table.concat(buf)
+    buf, bi = {}, 0
+  end
+end
+if bi > 0 then outChunks[#outChunks + 1] = table.concat(buf) end
+local src = table.concat(outChunks)
+
+local loader = loadstring or load
+if type(loader) ~= "function" then
+  if lp then lp:Kick("[Kingmor] No loadstring") end
+  return
+end
+
+local fn, err = loader(src)
+if not fn then
+  warn("[Kingmor] compile error:", err)
+  if lp then lp:Kick("[Kingmor] Script compile error") end
+  return
+end
+
+local okRun, runErr = pcall(fn)
+if not okRun then
+  warn("[Kingmor] runtime error:", runErr)
+end
+`;
+}
+
+
+
+
 
 
 function generatePremiumKey() {
@@ -1638,40 +1851,36 @@ ${sourceCode}`;
   if (isLoaderRequest) {
     if (!script.enabled) return sendLua(kickPlayer("Script Disabled"));
 
-    let sourceCode = readScriptSource(script);
-    if (sourceCode == null || sourceCode === "") return sendLua(kickPlayer("Source Missing"));
-    // Medium-heavy obfuscation at delivery (fresh keys every request)
-    try {
-      sourceCode = obfuscateLua(sourceCode);
-    } catch (e) {
-      console.error("obfuscateLua failed:", e.message);
-      return sendLua(kickPlayer("Protect Error"));
-    }
+    const plainSource = readScriptSource(script);
+    if (plainSource == null || plainSource === "") return sendLua(kickPlayer("Source Missing"));
     const providedKey = (req.query.key || "").toLowerCase().trim();
 
-    // ----- Chunk part download (raw source slice only) -----
-    if (isChunkReq) {
+    // ----- Encrypted part download (token-based, base64) -----
+    const token = typeof req.query.token === "string" ? req.query.token : null;
+    const partNum = req.query.part != null ? parseInt(req.query.part, 10) : NaN;
+    if (token && Number.isFinite(partNum)) {
       const auth = validateKey(providedKey);
       if (!auth.ok) return sendLua(kickPlayer(auth.reason));
-      const part = Math.max(1, parseInt(req.query.chunk, 10) || 1);
-      const startIdx = (part - 1) * CHUNK_SIZE;
-      if (startIdx >= sourceCode.length) return sendLua("");
-      const slice = sourceCode.slice(startIdx, startIdx + CHUNK_SIZE);
-      return sendLua(slice);
+      const delivery = readDelivery(token);
+      if (!delivery) return sendLua(kickPlayer("Delivery Expired"));
+      const CHUNK = 200 * 1024;
+      const startIdx = (Math.max(1, partNum) - 1) * CHUNK;
+      if (startIdx >= delivery.buf.length) return sendLua("");
+      const slice = delivery.buf.slice(startIdx, startIdx + CHUNK);
+      return sendLua(slice.toString("base64"));
     }
 
-    // ----- Full loader response -----
+    // ----- Full loader: always secure bootstrap (works for 1MB+ and small) -----
     const auth = validateKey(providedKey);
     if (!auth.ok) return sendLua(kickPlayer(auth.reason));
 
-    // Large scripts: bootstrap + chunks (avoids executor HttpGet size limits)
-    if (sourceCode.length > CHUNK_THRESHOLD) {
-      const boot = buildBootstrap(sourceCode.length, providedKey, isFreeMode);
+    try {
+      const boot = buildSecureLoader(plainSource, providedKey, isFreeMode, base, scriptId);
       return sendLua(boot);
+    } catch (e) {
+      console.error("buildSecureLoader failed:", e);
+      return sendLua(kickPlayer("Protect Error"));
     }
-
-    // Small scripts: single response
-    return sendLua(buildInlineWrapper(sourceCode, providedKey, isFreeMode));
   }
 
   // Browser page (copy loader)
