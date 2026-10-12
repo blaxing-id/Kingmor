@@ -35,6 +35,8 @@ const PREMIUM_PRICE_USD = "$2";
 const SCRIPT_LIMIT = { free: 2, premium: 10 };
 /** Max Lua source size in characters (~25MB). Keep under typical proxy/body limits. */
 const MAX_SOURCE_CHARS = 25 * 1024 * 1024;
+const OBF_LIMIT = { free: 5, premium: 15 };
+const OBF_USAGE_FILE = path.join(DATA_DIR, "obf_usage.json");
 
 fs.mkdirSync(SCRIPTS_DIR, { recursive: true });
 
@@ -45,6 +47,7 @@ if (!fs.existsSync(GUILDS_FILE)) fs.writeFileSync(GUILDS_FILE, "[]", "utf8");
 if (!fs.existsSync(PREMIUM_FILE)) fs.writeFileSync(PREMIUM_FILE, "{}", "utf8");
 if (!fs.existsSync(PREMIUM_KEYS_FILE)) fs.writeFileSync(PREMIUM_KEYS_FILE, "[]", "utf8");
 if (!fs.existsSync(HWID_COOLDOWN_FILE)) fs.writeFileSync(HWID_COOLDOWN_FILE, "{}", "utf8");
+if (!fs.existsSync(OBF_USAGE_FILE)) fs.writeFileSync(OBF_USAGE_FILE, "{}", "utf8");
 
 app.use(express.json({ limit: "30mb" }));
 app.use(express.urlencoded({ extended: true, limit: "30mb" }));
@@ -136,6 +139,25 @@ function isPremium(userId) {
 function scriptLimitFor(userId) {
   return isPremium(userId) ? SCRIPT_LIMIT.premium : SCRIPT_LIMIT.free;
 }
+function readObfUsage() { return readJSON(OBF_USAGE_FILE, {}); }
+function writeObfUsage(data) { writeJSON(OBF_USAGE_FILE, data); }
+function obfLimitFor(userId) {
+  return isPremium(userId) ? OBF_LIMIT.premium : OBF_LIMIT.free;
+}
+function getObfUsed(userId) {
+  const u = readObfUsage()[String(userId)];
+  return u && typeof u.count === "number" ? u.count : 0;
+}
+function incObfUsed(userId) {
+  const all = readObfUsage();
+  const id = String(userId);
+  const cur = all[id] || { count: 0 };
+  cur.count = (cur.count || 0) + 1;
+  cur.lastAt = new Date().toISOString();
+  all[id] = cur;
+  writeObfUsage(all);
+  return cur.count;
+}
 function generateId() {
   return crypto.randomBytes(7).toString("hex");
 }
@@ -190,9 +212,8 @@ function readScriptSource(script) {
   return unprotectSource(raw, script.id);
 }
 
-// ==================== LUA OBFUSCATOR (medium-heavy) ====================
-// Multi-layer: shuffle-split payload + dual XOR stream + mini "VM" bootstrap.
-// Not a commercial Lua VM, but casual deobfuscation is painful.
+// ==================== LUA OBFUSCATOR (high-compat KM-OBF) ====================
+// Simple XOR + base64 + bootstrap. Tuned for executor compatibility (~max practical reliability).
 function obfuscateLua(plainSource) {
   const src = String(plainSource || "");
   if (!src.trim()) return src;
@@ -200,114 +221,106 @@ function obfuscateLua(plainSource) {
   const rndU32 = () => crypto.randomBytes(4).readUInt32BE(0) >>> 0;
   const id = () => {
     const alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
-    let s = "_k";
-    for (let i = 0; i < 8; i++) s += alphabet[rndU32() % alphabet.length];
+    let s = "_";
+    for (let i = 0; i < 10; i++) s += alphabet[rndU32() % alphabet.length];
     return s;
   };
 
   const key = crypto.randomBytes(32);
   const seed = rndU32();
 
-  // MUST match Lua decoder exactly (0-based index i)
   function scramble(buf) {
     const out = Buffer.allocUnsafe(buf.length);
     let s = seed >>> 0;
     for (let i = 0; i < buf.length; i++) {
       s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
-      const k = key[i & 31]; // key length 32
+      const k = key[i & 31];
       const drift = ((s & 255) ^ ((i * 131) & 255)) & 255;
       out[i] = buf[i] ^ k ^ drift;
     }
     return out;
   }
 
-  const plainBuf = Buffer.from(src, "utf8");
-  const enc = scramble(plainBuf);
-  const b64payload = enc.toString("base64");
-
-  // Split base64 into pieces of ~200 chars (avoid huge single literal limits)
-  const pieceSize = 4000;
+  const enc = scramble(Buffer.from(src, "utf8"));
+  const b64 = enc.toString("base64");
+  const pieceSize = 3500;
   const pieces = [];
-  for (let i = 0; i < b64payload.length; i += pieceSize) {
-    pieces.push(b64payload.slice(i, i + pieceSize));
-  }
+  for (let i = 0; i < b64.length; i += pieceSize) pieces.push(b64.slice(i, i + pieceSize));
 
-  const nKey = id(), nSeed = id(), nParts = id(), nDec = id(), nB64 = id();
-  const nSrc = id(), nFn = id(), nI = id(), nS = id(), nK = id(), nD = id(), nB = id(), nOut = id();
-  const nBx = id(), nA = id(), nC = id(), nR = id(), nP = id(), nLoad = id();
-  const nOk = id(), nErr = id();
-
+  const K = id(), S = id(), P = id(), bx = id(), b64d = id(), dec = id();
+  const load = id(), fn = id(), err = id(), ok = id(), re = id();
   const keyLua = Array.from(key).join(",");
-  const partsLua = pieces.map((p, idx) => `  [${idx + 1}]=[=[${p}]=]`).join(",\n");
+  const partsLua = pieces.map((p, i) => `  [${i + 1}]=[=[${p}]=]`).join(",\n");
 
-  // Use long-bracket [=[ ]=] so base64 never breaks the string
+  // Minimal, portable Lua — no bit32 required, no table.create, chunked concat
   return `-- Kingmor KM-OBF
-local ${nKey}={${keyLua}}
-local ${nSeed}=${seed}
-local ${nParts}={
+local ${K}={${keyLua}}
+local ${S}=${seed}
+local ${P}={
 ${partsLua}
 }
-local function ${nBx}(a,c)
-  a=a%256;c=c%256
-  if bit32 and bit32.bxor then return bit32.bxor(a,c) end
+local function ${bx}(a,c)
+  a=a%256 c=c%256
   local r,p=0,1
   for _=1,8 do
     local x,y=a%2,c%2
     if x~=y then r=r+p end
-    a,c,p=(a-x)/2,(c-y)/2,p*2
+    a=(a-x)/2 c=(c-y)/2 p=p*2
   end
   return r
 end
-local function ${nB64}(data)
-  local alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-  local t={}
-  for i=1,#alphabet do t[alphabet:sub(i,i)]=i-1 end
-  data=tostring(data or ''):gsub('%s',''):gsub('[^A-Za-z0-9%+/=]','')
+local function ${b64d}(data)
+  local A="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  local L={}
+  for i=1,#A do L[string.sub(A,i,i)]=i-1 end
+  data=string.gsub(tostring(data or ""),"[^A-Za-z0-9%+/=]","")
   local out,val,bits={},0,0
   for i=1,#data do
-    local ch=data:sub(i,i)
-    if ch=='=' then break end
-    local f=t[ch]
+    local ch=string.sub(data,i,i)
+    if ch=="=" then break end
+    local f=L[ch]
     if f then
       val=val*64+f
       bits=bits+6
       if bits>=8 then
         bits=bits-8
-        local div=2^bits
-        out[#out+1]=string.char(math.floor(val/div)%256)
-        val=val%div
+        local d=2^bits
+        out[#out+1]=string.char(math.floor(val/d)%256)
+        val=val%d
       end
     end
   end
   return table.concat(out)
 end
-local function ${nDec}()
-  local ${nS}=table.concat(${nParts})
-  local ${nB}=${nB64}(${nS})
-  local ${nOut}={}
-  local ${nR}=${nSeed}
-  for ${nI}=1,#${nB} do
-    ${nR}=(1664525*${nR}+1013904223)%4294967296
-    local ${nK}=${nKey}[((${nI}-1)%32)+1]
-    local ${nD}=${nBx}(${nR}%256,((${nI}-1)*131)%256)
-    local ${nA}=string.byte(${nB},${nI})
-    ${nOut}[${nI}]=string.char(${nBx}(${nBx}(${nA},${nK}),${nD}))
+local function ${dec}()
+  local raw=${b64d}(table.concat(${P}))
+  local chunks,buf,bi={},{},0
+  local st=${S}
+  for i=1,#raw do
+    st=(1664525*st+1013904223)%4294967296
+    local k=${K}[((i-1)%32)+1]
+    local drift=${bx}(st%256,((i-1)*131)%256)
+    bi=bi+1
+    buf[bi]=string.char(${bx}(${bx}(string.byte(raw,i),k),drift))
+    if bi>=4096 then
+      chunks[#chunks+1]=table.concat(buf)
+      buf={}
+      bi=0
+    end
   end
-  return table.concat(${nOut})
+  if bi>0 then chunks[#chunks+1]=table.concat(buf) end
+  return table.concat(chunks)
 end
-local ${nSrc}=${nDec}()
-local ${nLoad}=loadstring or load
-if type(${nLoad})~='function' then error('[Kingmor] no loadstring',0) end
-local ${nFn},${nC}=${nLoad}(${nSrc})
-if not ${nFn} then
-  error('[Kingmor] unpack failed: '..tostring(${nC}),0)
-end
-local ${nOk},${nErr}=pcall(${nFn})
-if not ${nOk} then
-  error('[Kingmor] runtime: '..tostring(${nErr}),0)
-end
+local ${load}=loadstring or load
+if type(${load})~="function" then error("Kingmor: no loadstring",0) end
+local src=${dec}()
+local ${fn},${err}=${load}(src)
+if not ${fn} then error("Kingmor: compile failed",0) end
+local ${ok},${re}=pcall(${fn})
+if not ${ok} then error(tostring(${re}),0) end
 `;
 }
+
 
 // Ephemeral encrypted delivery for reliable large-script loading
 const DELIVER_DIR = path.join(DATA_DIR, "deliver");
@@ -325,51 +338,55 @@ function scrambleBuffer(buf, key, seed) {
   return out;
 }
 
-function createDelivery(plainUtf8) {
+/** Scramble only a slice, advancing LCG to the correct global offset (multi-instance safe). */
+function scrambleSlice(plainBuf, key, seed, start, length) {
+  let s = seed >>> 0;
+  for (let i = 0; i < start; i++) {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+  }
+  const end = Math.min(start + length, plainBuf.length);
+  const out = Buffer.allocUnsafe(Math.max(0, end - start));
+  for (let i = 0; i < out.length; i++) {
+    const gi = start + i;
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    const k = key[gi & 31];
+    const drift = ((s & 255) ^ ((gi * 131) & 255)) & 255;
+    out[i] = plainBuf[gi] ^ k ^ drift;
+  }
+  return out;
+}
+
+/**
+ * Reliable multi-instance loader:
+ * - Key/seed embedded in tiny bootstrap (no shared /tmp cache)
+ * - Each part request re-reads source + scrambleSlice (any Railway replica works)
+ * - Small chunks + retries + multi transport
+ */
+function buildSecureLoader(plain, userKey, freeModeFlag, base, scriptId, doObfuscate) {
+  let payload = String(plain || "");
+  // Heavy OBF only for moderately sized scripts (large files stay transit-encrypted for max reliability)
+  if (doObfuscate && Buffer.byteLength(payload, "utf8") <= 200 * 1024) {
+    try {
+      payload = obfuscateLua(payload);
+    } catch (e) {
+      console.error("obfuscateLua at deliver failed:", e.message);
+    }
+  }
+
   const key = crypto.randomBytes(32);
   const seed = crypto.randomBytes(4).readUInt32BE(0) >>> 0;
-  const plainBuf = Buffer.from(String(plainUtf8), "utf8");
-  const enc = scrambleBuffer(plainBuf, key, seed);
-  const token = crypto.randomBytes(16).toString("hex");
-  const meta = { seed, key: key.toString("base64"), len: enc.length, exp: Date.now() + 10 * 60 * 1000 };
-  fs.writeFileSync(path.join(DELIVER_DIR, token + ".bin"), enc);
-  fs.writeFileSync(path.join(DELIVER_DIR, token + ".json"), JSON.stringify(meta));
-  return { token, key, seed, len: enc.length };
-}
-
-function readDelivery(token) {
-  if (!token || !/^[a-f0-9]{32}$/.test(token)) return null;
-  const binPath = path.join(DELIVER_DIR, token + ".bin");
-  const metaPath = path.join(DELIVER_DIR, token + ".json");
-  if (!fs.existsSync(binPath) || !fs.existsSync(metaPath)) return null;
-  try {
-    const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
-    if (Date.now() > meta.exp) {
-      try { fs.unlinkSync(binPath); } catch {}
-      try { fs.unlinkSync(metaPath); } catch {}
-      return null;
-    }
-    return { buf: fs.readFileSync(binPath), meta };
-  } catch {
-    return null;
-  }
-}
-
-/** Reliable loader: small bootstrap + encrypted chunk fetch + decode + loadstring */
-function buildSecureLoader(plain, userKey, freeModeFlag, base, scriptId) {
-  const { token, key, seed, len } = createDelivery(plain);
-  const CHUNK = 180 * 1024;
-  const parts = Math.max(1, Math.ceil(len / CHUNK));
+  const plainBuf = Buffer.from(payload, "utf8");
+  const plainLen = plainBuf.length;
+  const CHUNK = 96 * 1024;
   const keyLua = Array.from(key).join(",");
-  const uk = String(userKey || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  const keyQuery = freeModeFlag ? "" : "&key=" + encodeURIComponent(String(userKey || "").toLowerCase().trim());
+  const keyHex = key.toString("hex");
+  const uk = String(userKey || "").toLowerCase().trim();
 
-  // HWID gate (non-free requires valid key binding)
   const hwidBlock = freeModeFlag
     ? `pcall(function() httpget(${JSON.stringify(base + "/api/hwid/check?scriptId=" + scriptId + "&hwid=")} .. hwid) end)`
     : `do
   local ok,body = pcall(function()
-    return httpget(${JSON.stringify(base + "/api/hwid/check?scriptId=" + scriptId + "&key=" + String(userKey || "").toLowerCase().trim() + "&hwid=")} .. hwid)
+    return httpget(${JSON.stringify(base + "/api/hwid/check?scriptId=" + scriptId + "&key=" + uk + "&hwid=")} .. hwid)
   end)
   if not ok or type(body) ~= "string" or body == "" then
     if lp then lp:Kick("[Kingmor] HWID Check Failed") end
@@ -384,168 +401,146 @@ function buildSecureLoader(plain, userKey, freeModeFlag, base, scriptId) {
   end
 end`;
 
-  return `-- Kingmor secure loader v3
-local HttpService = game:GetService("HttpService")
-local Players = game:GetService("Players")
-local lp = Players.LocalPlayer
-local hwid = ""
-pcall(function()
-  hwid = tostring(game:GetService("RbxAnalyticsService"):GetClientId())
-end)
-
--- Universal HTTP GET (executor request() first, then HttpGet)
-local function httpget(url)
-  local req = (type(request) == "function" and request)
-    or (type(http_request) == "function" and http_request)
-    or (type(syn) == "table" and type(syn.request) == "function" and syn.request)
-    or (type(http) == "table" and type(http.request) == "function" and http.request)
-    or (type(fluxus) == "table" and type(fluxus.request) == "function" and fluxus.request)
-  if req then
-    local ok, res = pcall(req, { Url = url, Method = "GET", Headers = { ["User-Agent"] = "KingmorLoader/3" } })
-    if ok and type(res) == "table" then
-      local body = res.Body or res.body or res.Data or res.data
-      if type(body) == "string" then return body end
-    end
+  const httpgetFn = `local function httpget(url)
+  local list = {}
+  local function add(f) if type(f)=="function" then list[#list+1]=f end end
+  if type(request)=="function" then add(function(u) local r=request({Url=u,Method="GET",Headers={["User-Agent"]="Kingmor/5"}}) if type(r)=="table" then return r.Body or r.body or r.Data or r.data end end) end
+  if type(http_request)=="function" then add(function(u) local r=http_request({Url=u,Method="GET"}) if type(r)=="table" then return r.Body or r.body end end) end
+  if type(syn)=="table" and type(syn.request)=="function" then add(function(u) local r=syn.request({Url=u,Method="GET"}) if type(r)=="table" then return r.Body or r.body end end) end
+  if type(http)=="table" and type(http.request)=="function" then add(function(u) local r=http.request({Url=u,Method="GET"}) if type(r)=="table" then return r.Body or r.body end end) end
+  if type(fluxus)=="table" and type(fluxus.request)=="function" then add(function(u) local r=fluxus.request({Url=u,Method="GET"}) if type(r)=="table" then return r.Body or r.body end end) end
+  add(function(u) if type(game.HttpGet)=="function" then return game:HttpGet(u) end end)
+  add(function(u) return HttpService:GetAsync(u,true) end)
+  local last="no http"
+  for i=1,#list do
+    local ok,res=pcall(list[i],url)
+    if ok and type(res)=="string" and #res>0 then return res end
+    last=tostring(res)
   end
-  if type(game.HttpGet) == "function" then
-    return game:HttpGet(url)
-  end
-  if type(HttpService.GetAsync) == "function" then
-    return HttpService:GetAsync(url, true)
-  end
-  error("no http transport")
-end
+  error(last)
+end`;
 
-${hwidBlock}
-
-local key = {${keyLua}}
-local seed = ${seed}
-local parts = ${parts}
-local token = "${token}"
-local baseUrl = ${JSON.stringify(base + "/api/loader/" + scriptId + ".lua?token=" + token + keyQuery + "&part=")}
-
-local function bx(a, c)
-  a = a % 256
-  c = c % 256
-  if bit32 and bit32.bxor then return bit32.bxor(a, c) end
-  local r, p = 0, 1
-  for _ = 1, 8 do
-    local x, y = a % 2, c % 2
-    if x ~= y then r = r + p end
-    a, c, p = (a - x) / 2, (c - y) / 2, p * 2
-  end
+  const sharedDecode = `local function bx(a,c)
+  a=a%256;c=c%256
+  if bit32 and bit32.bxor then return bit32.bxor(a,c) end
+  local r,p=0,1
+  for _=1,8 do local x,y=a%2,c%2 if x~=y then r=r+p end a,c,p=(a-x)/2,(c-y)/2,p*2 end
   return r
 end
-
 local function b64dec(data)
-  local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-  local lookup = {}
-  for i = 1, #alphabet do lookup[alphabet:sub(i, i)] = i - 1 end
-  data = tostring(data or ""):gsub("%s+", ""):gsub("[^A-Za-z0-9%+/=]", "")
-  local out, val, bits = {}, 0, 0
-  for i = 1, #data do
-    local ch = data:sub(i, i)
-    if ch == "=" then break end
-    local f = lookup[ch]
+  local A="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+  local L={} for i=1,#A do L[A:sub(i,i)]=i-1 end
+  data=tostring(data or ""):gsub("%s+",""):gsub("[^A-Za-z0-9%+/=]","")
+  local out,val,bits={},0,0
+  for i=1,#data do
+    local ch=data:sub(i,i)
+    if ch=="=" then break end
+    local f=L[ch]
     if f then
-      val = val * 64 + f
-      bits = bits + 6
-      if bits >= 8 then
-        bits = bits - 8
-        local div = 2 ^ bits
-        out[#out + 1] = string.char(math.floor(val / div) % 256)
-        val = val % div
-      end
+      val=val*64+f; bits=bits+6
+      if bits>=8 then bits=bits-8; local d=2^bits; out[#out+1]=string.char(math.floor(val/d)%256); val=val%d end
     end
   end
   return table.concat(out)
 end
+local function decrypt(enc)
+  local outChunks,buf,bi={}, {},0
+  local s=seed
+  for i=1,#enc do
+    s=(1664525*s+1013904223)%4294967296
+    local k=key[((i-1)%32)+1]
+    local drift=bx(s%256,((i-1)*131)%256)
+    bi=bi+1; buf[bi]=string.char(bx(bx(string.byte(enc,i),k),drift))
+    if bi>=8192 then outChunks[#outChunks+1]=table.concat(buf); buf={}; bi=0 end
+  end
+  if bi>0 then outChunks[#outChunks+1]=table.concat(buf) end
+  return table.concat(outChunks)
+end
+local function run(src)
+  local loader=loadstring or load
+  if type(loader)~="function" then if lp then lp:Kick("[Kingmor] No loadstring") end return end
+  local fn,err=loader(src)
+  if not fn then warn("[Kingmor] compile:",err) if lp then lp:Kick("[Kingmor] Script compile error") end return end
+  local ok,re=pcall(fn)
+  if not ok then warn("[Kingmor] runtime:",re) end
+end`;
 
--- Download encrypted parts (retry 3x)
-local pieces = table.create and table.create(parts) or {}
-for i = 1, parts do
-  local url = baseUrl .. tostring(i)
-  local body, lastErr = nil, nil
-  for attempt = 1, 3 do
-    local ok, res = pcall(httpget, url)
-    if ok and type(res) == "string" and #res > 0 then
-      -- reject kick/html payloads
-      if res:sub(1, 15) == "-- Kingmor secur" then
-        lastErr = "got loader instead of part"
-      elseif res:find("LocalPlayer:Kick", 1, true) and #res < 500 then
-        local fn = (loadstring or load)(res)
-        if fn then pcall(fn) end
-        return
-      else
-        body = res
-        break
-      end
-    else
-      lastErr = tostring(res)
-    end
-    pcall(function() if task and task.wait then task.wait(0.35 * attempt) else wait(0.35 * attempt) end end)
+  // SMALL: inline — no extra HTTP (fixes download failed for normal scripts)
+  const INLINE_MAX = 120 * 1024;
+  if (plainLen <= INLINE_MAX) {
+    const enc = scrambleBuffer(plainBuf, key, seed);
+    const b64 = enc.toString("base64");
+    const pieces = [];
+    for (let i = 0; i < b64.length; i += 4000) {
+      pieces.push("[=[" + b64.slice(i, i + 4000) + "]=]");
+    }
+    const partsLua = pieces.map((p, idx) => "  [" + (idx + 1) + "]=" + p).join(",\n");
+    return `-- Kingmor secure loader v5-inline
+local HttpService=game:GetService("HttpService")
+local Players=game:GetService("Players")
+local lp=Players.LocalPlayer
+local hwid=""
+pcall(function() hwid=tostring(game:GetService("RbxAnalyticsService"):GetClientId()) end)
+${httpgetFn}
+${hwidBlock}
+local key={${keyLua}}
+local seed=${seed}
+local _p={
+${partsLua}
+}
+${sharedDecode}
+local enc=b64dec(table.concat(_p))
+run(decrypt(enc))
+`;
+  }
+
+  // LARGE: multi-part pack
+  const parts = Math.max(1, Math.ceil(plainLen / CHUNK));
+  const partBase = base + "/api/loader/" + scriptId + ".lua?pack=1&seed=" + seed + "&kh=" + keyHex + "&psz=" + CHUNK
+    + (freeModeFlag ? "" : "&key=" + encodeURIComponent(uk));
+
+  return `-- Kingmor secure loader v5-pack
+local HttpService=game:GetService("HttpService")
+local Players=game:GetService("Players")
+local lp=Players.LocalPlayer
+local hwid=""
+pcall(function() hwid=tostring(game:GetService("RbxAnalyticsService"):GetClientId()) end)
+${httpgetFn}
+${hwidBlock}
+local key={${keyLua}}
+local seed=${seed}
+local parts=${parts}
+local partBase=${JSON.stringify(partBase + "&part=")}
+${sharedDecode}
+local function nap(sec) pcall(function() if task and task.wait then task.wait(sec) else wait(sec) end end) end
+local pieces={}
+for i=1,parts do
+  local url=partBase..tostring(i)
+  local body,lastErr=nil,nil
+  for attempt=1,6 do
+    local ok,res=pcall(httpget,url)
+    if ok and type(res)=="string" and #res>8 then
+      if res:sub(1,10)=="-- Kingmor" then lastErr="got bootstrap"
+      elseif #res<500 and res:find("Kick",1,true) then local fn=(loadstring or load)(res) if fn then pcall(fn) end return
+      else body=res break end
+    else lastErr=tostring(res) end
+    nap(0.45*attempt)
   end
   if not body then
-    if lp then lp:Kick("[Kingmor] Download failed part " .. tostring(i)) end
-    warn("[Kingmor] part fail:", i, lastErr)
+    warn("[Kingmor] part fail",i,lastErr)
+    if lp then lp:Kick("[Kingmor] Download failed part "..tostring(i)) end
     return
   end
-  local okd, decoded = pcall(b64dec, body)
-  if not okd or type(decoded) ~= "string" then
-    if lp then lp:Kick("[Kingmor] Decode failed part " .. tostring(i)) end
+  local okd,dec=pcall(b64dec,body)
+  if not okd or type(dec)~="string" or #dec==0 then
+    if lp then lp:Kick("[Kingmor] Decode failed part "..tostring(i)) end
     return
   end
-  pieces[i] = decoded
+  pieces[i]=dec
 end
-
-local enc = table.concat(pieces)
-if #enc == 0 then
-  if lp then lp:Kick("[Kingmor] Empty payload") end
-  return
-end
-
--- Decrypt (matches server scrambleBuffer exactly)
-local outChunks, buf, bi = {}, {}, 0
-local s = seed
-local n = #enc
-for i = 1, n do
-  s = (1664525 * s + 1013904223) % 4294967296
-  local k = key[((i - 1) % 32) + 1]
-  local drift = bx(s % 256, ((i - 1) * 131) % 256)
-  local b = string.byte(enc, i)
-  bi = bi + 1
-  buf[bi] = string.char(bx(bx(b, k), drift))
-  if bi >= 8192 then
-    outChunks[#outChunks + 1] = table.concat(buf)
-    buf, bi = {}, 0
-  end
-end
-if bi > 0 then outChunks[#outChunks + 1] = table.concat(buf) end
-local src = table.concat(outChunks)
-
-local loader = loadstring or load
-if type(loader) ~= "function" then
-  if lp then lp:Kick("[Kingmor] No loadstring") end
-  return
-end
-
-local fn, err = loader(src)
-if not fn then
-  warn("[Kingmor] compile error:", err)
-  if lp then lp:Kick("[Kingmor] Script compile error") end
-  return
-end
-
-local okRun, runErr = pcall(fn)
-if not okRun then
-  warn("[Kingmor] runtime error:", runErr)
-end
+run(decrypt(table.concat(pieces)))
 `;
 }
-
-
-
-
 
 
 function generatePremiumKey() {
@@ -840,6 +835,7 @@ ${FONTS}
     ${link("/pricing", "Pricing", "pricing")}
     ${link("/redeem", "Redeem Key", "redeem")}
     ${link("/dashboard", "Dashboard", "dashboard")}
+    ${link("/obf", "OBF Script", "obf")}
     ${isAdminUser ? link("/admin/sources", "🕵️ Player Source", "sources") : ""}
     ${isAdminUser ? link("/admin/dashboard", "🛡️ Admin", "admin") : ""}
     <a href="${DISCORD_INVITE}" target="_blank" rel="noopener">Discord</a>
@@ -1127,12 +1123,17 @@ app.get("/api/scripts/:id/source", requireAuth, (req, res) => {
   const script = db.find((s) => s.id === req.params.id);
   if (!script) return res.status(404).json({ error: "Script not found" });
   if (script.ownerId !== req.session.user.id) return res.status(403).json({ error: "Forbidden" });
-  const source = readScriptSource(script);
+  let source = readScriptSource(script);
   if (source == null) return res.status(404).json({ error: "Source file missing" });
+  const wantObfView = req.query.obf === "1" || req.query.obf === "true";
+  if (wantObfView && script.obfuscated) {
+    try { source = obfuscateLua(source); } catch (e) { console.error(e); }
+  }
   res.json({
     id: script.id,
     name: script.name,
     enabled: script.enabled,
+    obfuscated: !!script.obfuscated,
     source,
   });
 });
@@ -1222,13 +1223,14 @@ app.post("/api/scripts", requireAuth, (req, res) => {
   const id = generateId();
   const filename = `${id}.lua`;
   // KM1 protect-at-rest (obfuscation applied at loader time so each run is unique)
+  const wantObf = req.body.obfuscate === true || req.body.obfuscate === "true" || req.body.obfuscate === 1;
   const protectedPayload = protectSource(source, id);
   fs.writeFileSync(path.join(SCRIPTS_DIR, filename), protectedPayload, "utf8");
 
   const script = {
     id, name: name.trim().slice(0, 100), filename, enabled: true,
     protected: true,
-    obfuscated: true,
+    obfuscated: wantObf,
     ownerId: userId, ownerUsername: req.session.user.username,
     guildId: guildId || null, createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -1271,7 +1273,11 @@ app.put("/api/scripts/:id", requireAuth, (req, res) => {
     const filepath = path.join(SCRIPTS_DIR, script.filename);
     fs.writeFileSync(filepath, protectSource(source, script.id), "utf8");
     script.protected = true;
-    script.obfuscated = true;
+    if (req.body.obfuscate !== undefined) {
+      script.obfuscated = req.body.obfuscate === true || req.body.obfuscate === "true" || req.body.obfuscate === 1;
+    }
+  } else if (req.body.obfuscate !== undefined) {
+    script.obfuscated = req.body.obfuscate === true || req.body.obfuscate === "true" || req.body.obfuscate === 1;
   }
 
   script.updatedAt = new Date().toISOString();
@@ -1855,27 +1861,37 @@ ${sourceCode}`;
     if (plainSource == null || plainSource === "") return sendLua(kickPlayer("Source Missing"));
     const providedKey = (req.query.key || "").toLowerCase().trim();
 
-    // ----- Encrypted part download (token-based, base64) -----
-    const token = typeof req.query.token === "string" ? req.query.token : null;
+    // ----- Pack part download (multi-instance safe: re-scramble from source) -----
+    const isPack = req.query.pack === "1" || req.query.pack === "true";
     const partNum = req.query.part != null ? parseInt(req.query.part, 10) : NaN;
-    if (token && Number.isFinite(partNum)) {
+    if (isPack && Number.isFinite(partNum)) {
       const auth = validateKey(providedKey);
       if (!auth.ok) return sendLua(kickPlayer(auth.reason));
-      const delivery = readDelivery(token);
-      if (!delivery) return sendLua(kickPlayer("Delivery Expired"));
-      const CHUNK = 200 * 1024;
-      const startIdx = (Math.max(1, partNum) - 1) * CHUNK;
-      if (startIdx >= delivery.buf.length) return sendLua("");
-      const slice = delivery.buf.slice(startIdx, startIdx + CHUNK);
-      return sendLua(slice.toString("base64"));
+      const kh = String(req.query.kh || "");
+      const seed = parseInt(req.query.seed, 10) >>> 0;
+      const psz = Math.min(Math.max(parseInt(req.query.psz, 10) || 96 * 1024, 16 * 1024), 200 * 1024);
+      if (!/^[a-f0-9]{64}$/i.test(kh)) return sendLua(kickPlayer("Bad Pack Key"));
+      const packKey = Buffer.from(kh, "hex");
+      if (packKey.length !== 32) return sendLua(kickPlayer("Bad Pack Key"));
+      const plainBuf = Buffer.from(plainSource, "utf8");
+      const startIdx = (Math.max(1, partNum) - 1) * psz;
+      if (startIdx >= plainBuf.length) return sendLua("");
+      try {
+        const slice = scrambleSlice(plainBuf, packKey, seed, startIdx, psz);
+        return sendLua(slice.toString("base64"));
+      } catch (e) {
+        console.error("pack part error:", e);
+        return sendLua(kickPlayer("Pack Error"));
+      }
     }
 
-    // ----- Full loader: always secure bootstrap (works for 1MB+ and small) -----
+    // ----- Full loader bootstrap -----
     const auth = validateKey(providedKey);
     if (!auth.ok) return sendLua(kickPlayer(auth.reason));
 
     try {
-      const boot = buildSecureLoader(plainSource, providedKey, isFreeMode, base, scriptId);
+      const doObf = script.obfuscated === true;
+      const boot = buildSecureLoader(plainSource, providedKey, isFreeMode, base, scriptId, doObf);
       return sendLua(boot);
     } catch (e) {
       console.error("buildSecureLoader failed:", e);
@@ -2148,6 +2164,140 @@ async function redeem(){
 
 // ==================== DASHBOARD ====================
 
+
+// ==================== STANDALONE OBF TOOL ====================
+app.get("/obf", requireAuth, (req, res) => {
+  const userId = String(req.session.user.id);
+  const premium = isPremium(userId);
+  const limit = obfLimitFor(userId);
+  const used = getObfUsed(userId);
+  const left = Math.max(0, limit - used);
+
+  res.send(page({
+    req,
+    title: "Kingmor • OBF Script",
+    active: "obf",
+    body: `
+<main class="wrap" style="padding:40px 0 60px">
+  <div class="h-row"><h2>OBF Script</h2><div class="ln"></div></div>
+  <p style="color:var(--mute);margin-bottom:20px;max-width:640px">
+    Paste or upload a Lua script, obfuscate it, and download the result.
+    This is a standalone tool — separate from Discord protect / panels.
+  </p>
+
+  <div class="stats" style="margin-bottom:24px">
+    <div class="stat"><b>${used}/${limit}</b><span>OBF used</span></div>
+    <div class="stat"><b>${left}</b><span>Remaining</span></div>
+    <div class="stat"><b>${premium ? "Premium" : "Free"}</b><span>Plan (Free ${OBF_LIMIT.free} · Premium ${OBF_LIMIT.premium})</span></div>
+  </div>
+
+  ${left <= 0 ? `<div class="alert" style="margin-bottom:16px;padding:14px 16px;border:1px solid rgba(255,107,94,.4);border-radius:12px;background:rgba(255,107,94,.08)">
+    <b>Quota reached.</b> Free: ${OBF_LIMIT.free} OBF · Premium: ${OBF_LIMIT.premium} OBF.
+    ${!premium ? '<a class="btn btn-gold btn-sm" href="/redeem" style="margin-left:10px">Redeem Premium</a>' : ""}
+  </div>` : ""}
+
+  <section class="form">
+    <input id="obfName" placeholder="Output filename (optional) e.g. myhub_obf" value="script_obf">
+    <div class="file-row">
+      <label class="btn btn-ghost btn-sm" for="obfFile">Choose .lua / .txt file</label>
+      <input id="obfFile" type="file" accept=".lua,.txt,text/plain">
+      <span id="obfFileName">No file selected</span>
+    </div>
+    <textarea id="obfSource" placeholder="Or paste your Lua source here" style="min-height:280px"></textarea>
+    <button class="btn btn-gold" id="obfBtn" onclick="runObf()" ${left <= 0 ? "disabled" : ""}>
+      ${left <= 0 ? "Quota reached" : "Obfuscate & download"}
+    </button>
+  </section>
+</main>
+`,
+    script: `
+var MAX=${MAX_SOURCE_CHARS};
+function readObfFile(input){
+  var f=input.files&&input.files[0]; if(!f)return;
+  if(f.size>MAX){toast('Maximum file size is 25MB','err');input.value='';return;}
+  $('obfFileName').textContent=f.name;
+  var r=new FileReader();
+  r.onload=function(){ $('obfSource').value=String(r.result||''); };
+  r.readAsText(f);
+}
+document.getElementById('obfFile').addEventListener('change',function(){ readObfFile(this); });
+
+async function runObf(){
+  var source=$('obfSource').value;
+  var name=($('obfName').value||'script_obf').trim().replace(/[^a-zA-Z0-9._-]+/g,'_') || 'script_obf';
+  if(!source.trim()){toast('Paste or upload a Lua script first','err');return;}
+  var b=$('obfBtn'); b.disabled=true; b.textContent='Obfuscating...';
+  try{
+    var r=await fetch('/api/obf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:source,name:name})});
+    if(!r.ok){
+      var d={}; try{d=await r.json()}catch(e){}
+      toast(d.error||('OBF failed ('+r.status+')'),'err');
+      b.disabled=false; b.textContent='Obfuscate & download';
+      return;
+    }
+    var blob=await r.blob();
+    var cd=r.headers.get('Content-Disposition')||'';
+    var m=cd.match(/filename="?([^";]+)"?/i);
+    var fname=m?m[1]:(name+'.lua');
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=fname;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(a.href);
+    toast('Obfuscated file downloaded','ok');
+    setTimeout(function(){ location.reload(); }, 600);
+  }catch(e){
+    toast('Server error','err');
+    b.disabled=false; b.textContent='Obfuscate & download';
+  }
+}
+`
+  }));
+});
+
+app.post("/api/obf", requireAuth, (req, res) => {
+  const userId = String(req.session.user.id);
+  const { source, name } = req.body || {};
+  if (!source || typeof source !== "string" || !source.trim()) {
+    return res.status(400).json({ error: "Lua source is required" });
+  }
+  if (source.length > MAX_SOURCE_CHARS) {
+    return res.status(413).json({ error: `File too large. Maximum ${Math.floor(MAX_SOURCE_CHARS / (1024 * 1024))}MB.` });
+  }
+
+  const limit = obfLimitFor(userId);
+  const used = getObfUsed(userId);
+  if (used >= limit) {
+    return res.status(403).json({
+      error: `OBF quota reached (${used}/${limit}). ${isPremium(userId) ? "Premium limit is 15." : "Free limit is 5. Redeem Premium for 15."}`,
+      used, limit, premium: isPremium(userId),
+    });
+  }
+
+  let out;
+  try {
+    out = obfuscateLua(source);
+  } catch (e) {
+    console.error("standalone obf failed:", e);
+    return res.status(500).json({ error: "Obfuscation failed" });
+  }
+  if (!out || !String(out).trim()) {
+    return res.status(500).json({ error: "Obfuscation produced empty output" });
+  }
+
+  const newCount = incObfUsed(userId);
+  const safe = String(name || "script_obf").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80) || "script_obf";
+  const filename = safe.endsWith(".lua") ? safe : safe + ".lua";
+
+  console.log(`🔒 OBF standalone: user ${userId} -> ${filename} (${newCount}/${limit})`);
+
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.setHeader("X-Obf-Used", String(newCount));
+  res.setHeader("X-Obf-Limit", String(limit));
+  return res.send(out);
+});
+
 app.get("/dashboard", requireAuth, (req, res) => {
   const db = readDB();
   const user = req.session.user;
@@ -2224,6 +2374,10 @@ app.get("/dashboard", requireAuth, (req, res) => {
       <span id="fileName">No file selected</span>
     </div>
     <textarea id="scriptSource" placeholder="Or paste your Lua source here"></textarea>
+    <label style="display:flex;align-items:center;gap:10px;margin:12px 0;cursor:pointer;user-select:none">
+      <input type="checkbox" id="scriptObf" checked style="width:18px;height:18px;accent-color:var(--gold)">
+      <span><b>Obfuscate on deliver</b> <span style="color:var(--mute);font-size:13px">(extra layer when buyer runs loader)</span></span>
+    </label>
     <button class="btn btn-gold" id="upBtn" onclick="uploadScript()" ${reached ? "disabled" : ""}>${reached ? "Script limit reached" : "Protect and upload"}</button>
   </section>
 
@@ -2245,6 +2399,14 @@ app.get("/dashboard", requireAuth, (req, res) => {
       <span id="editFileName">No file selected</span>
     </div>
     <textarea id="editSource" placeholder="Paste your Lua source here"></textarea>
+    <label style="display:flex;align-items:center;gap:10px;margin:12px 0;cursor:pointer;user-select:none">
+      <input type="checkbox" id="editObf" style="width:18px;height:18px;accent-color:var(--gold)">
+      <span><b>Obfuscate on deliver</b></span>
+    </label>
+    <div id="editObfNote" style="display:none;margin-bottom:10px">
+      <button class="btn btn-ghost btn-sm" type="button" onclick="viewObfSource()">View obfuscated preview</button>
+      <span style="color:var(--mute);font-size:12px;margin-left:8px">Preview only — keep editing plain source</span>
+    </div>
     <div class="modal-act">
       <button class="btn btn-ghost" onclick="closeEdit()">Cancel</button>
       <button class="btn btn-gold" id="editSaveBtn" onclick="saveEdit()">Save changes</button>
@@ -2278,11 +2440,12 @@ document.addEventListener('click',function(e){
 });
 async function uploadScript(){
   var name=$('scriptName').value.trim(),source=$('scriptSource').value;
+  var obfuscate=!!$('scriptObf')&&$('scriptObf').checked;
   if(!name){toast('Enter a script name','err');return;}
   if(!source.trim()){toast('Add your Lua source','err');return;}
   var b=$('upBtn');b.disabled=true;b.textContent='Uploading...';
   try{
-    var r=await fetch('/api/scripts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,source:source})});
+    var r=await fetch('/api/scripts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,source:source,obfuscate:obfuscate})});
     var d=await r.json();
     if(!r.ok){toast(d.error||'Upload failed','err');b.disabled=false;b.textContent='Protect and upload';return;}
     location.reload();
@@ -2301,12 +2464,25 @@ async function openEdit(id){
   editingId=id;
   $('editFileInput').value='';$('editFileName').textContent='No file selected';
   $('editName').value='Loading...';$('editSource').value='Loading...';
+  if($('editObf')) $('editObf').checked=false;
+  if($('editObfNote')) $('editObfNote').style.display='none';
   $('editModal').classList.add('show');
   try{
     var r=await fetch('/api/scripts/'+id+'/source');var d=await r.json();
     if(!r.ok){toast(d.error||'Failed to load script','err');closeEdit();return;}
     $('editName').value=d.name;$('editSource').value=d.source||'';
+    if($('editObf')) $('editObf').checked=!!d.obfuscated;
+    if($('editObfNote')) $('editObfNote').style.display=d.obfuscated?'block':'none';
   }catch(e){toast('Failed to load script source','err');closeEdit();}
+}
+async function viewObfSource(){
+  if(!editingId)return;
+  try{
+    var r=await fetch('/api/scripts/'+editingId+'/source?obf=1');var d=await r.json();
+    if(!r.ok){toast(d.error||'Failed','err');return;}
+    $('editSource').value=d.source||'';
+    toast('Showing obfuscated preview — do not save unless you intend to replace source','ok');
+  }catch(e){toast('Failed to load OBF preview','err');}
 }
 function closeEdit(){$('editModal').classList.remove('show');editingId=null;}
 async function saveEdit(){
@@ -2316,7 +2492,7 @@ async function saveEdit(){
   if(!source.trim()){toast('Source code cannot be empty','err');return;}
   var b=$('editSaveBtn');b.disabled=true;b.textContent='Saving...';
   try{
-    var r=await fetch('/api/scripts/'+editingId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,source:source})});
+    var r=await fetch('/api/scripts/'+editingId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,source:source,obfuscate:(!!$('editObf')&&$('editObf').checked)})});
     var d=await r.json();
     if(!r.ok){toast(d.error||'Failed to save','err');b.disabled=false;b.textContent='Save changes';return;}
     location.reload();
