@@ -110,6 +110,8 @@ const storeCache = {
   hwid_cooldowns: {},
 };
 let storeWriteChain = Promise.resolve();
+/** true only after a successful load from the web server (PostgreSQL) */
+let storeHydrated = false;
 
 function localRead(file, fallback) {
   try {
@@ -118,6 +120,11 @@ function localRead(file, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function isEmptyStore(data, fallback) {
+  if (Array.isArray(fallback)) return !Array.isArray(data) || data.length === 0;
+  return !data || typeof data !== "object" || Array.isArray(data) || Object.keys(data).length === 0;
 }
 
 async function pullStore(name) {
@@ -137,6 +144,11 @@ async function pushStore(name, data) {
 }
 
 function queuePush(name, data) {
+  // Never push while not hydrated — prevents wiping PostgreSQL with empty cache on boot failure
+  if (!storeHydrated) {
+    console.warn(`⚠️  Skip persist ${name}: store not hydrated from server yet`);
+    return Promise.resolve();
+  }
   storeWriteChain = storeWriteChain
     .then(() => pushStore(name, data))
     .catch((err) => console.error(`❌ Failed to persist ${name}:`, err.response?.data || err.message));
@@ -196,39 +208,51 @@ async function initStoreFromServer() {
     ["hwid_cooldowns", HWID_COOLDOWN_FILE, {}],
   ];
 
-  for (const [name, file, fallback] of specs) {
+  const maxAttempts = 8;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      let data = await pullStore(name);
-      const empty =
-        (Array.isArray(fallback) && Array.isArray(data) && data.length === 0) ||
-        (!Array.isArray(fallback) && data && typeof data === "object" && Object.keys(data).length === 0);
+      for (const [name, file, fallback] of specs) {
+        let data = await pullStore(name);
 
-      if (empty) {
-        const local = localRead(file, fallback);
-        const hasLocal = Array.isArray(local) ? local.length > 0 : Object.keys(local || {}).length > 0;
-        if (hasLocal) {
-          console.log(`⬆️  Migrating local ${name} → PostgreSQL`);
-          await pushStore(name, local);
-          data = local;
+        // One-time migrate local → PG only if server is empty and local has data
+        if (isEmptyStore(data, fallback)) {
+          const local = localRead(file, fallback);
+          if (!isEmptyStore(local, fallback)) {
+            console.log(`⬆️  Migrating local ${name} → PostgreSQL`);
+            await pushStore(name, local);
+            data = local;
+          }
         }
+
+        if (name === "keys" && Array.isArray(data)) {
+          data = data.map((k) => ({
+            ...k,
+            key: String(k.key || "").toLowerCase().trim(),
+            scriptId: k.scriptId != null ? String(k.scriptId) : k.scriptId,
+            userId: k.userId != null ? String(k.userId) : k.userId,
+          }));
+        }
+        storeCache[name] = data ?? fallback;
+        console.log(`✅ Store loaded: ${name}`);
       }
 
-      if (name === "keys" && Array.isArray(data)) {
-        data = data.map((k) => ({
-          ...k,
-          key: String(k.key || "").toLowerCase().trim(),
-          scriptId: k.scriptId != null ? String(k.scriptId) : k.scriptId,
-          userId: k.userId != null ? String(k.userId) : k.userId,
-        }));
-      }
-      storeCache[name] = data ?? fallback;
-      console.log(`✅ Store loaded: ${name}`);
+      storeHydrated = true;
+      console.log(`🔑 Keys ready: ${readKeys().length} | panels guilds: ${Object.keys(readConfig()).length}`);
+      return;
     } catch (err) {
-      console.error(`⚠️  Could not load ${name} from server:`, err.response?.data || err.message);
-      storeCache[name] = localRead(file, fallback);
+      console.error(`⚠️  Store load attempt ${attempt}/${maxAttempts} failed:`, err.response?.data || err.message);
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, 1500 * attempt));
+      }
     }
   }
-  console.log(`🔑 Keys ready: ${readKeys().length}`);
+
+  // Last resort: local files for READ only — do NOT mark hydrated (blocks push wipe)
+  console.error("❌ Could not hydrate store from server. Using local read-only fallback (writes disabled until restart succeeds).");
+  for (const [name, file, fallback] of specs) {
+    storeCache[name] = localRead(file, fallback);
+  }
+  storeHydrated = false;
 }
 
 function isPremiumLocal(userId) {
@@ -2639,6 +2663,31 @@ async function startAllBots() {
   console.log(`🚀 Starting ${BOTS.length} bot(s)...`);
   console.log(`📦 Loading shared data from server (PostgreSQL)...`);
   await initStoreFromServer();
+  // Soft refresh cache periodically (does not wipe — only replaces after successful pull)
+  setInterval(async () => {
+    if (!storeHydrated) {
+      await initStoreFromServer();
+      return;
+    }
+    try {
+      for (const name of ["keys", "botconfig", "blacklist", "premium", "hwid_cooldowns"]) {
+        const data = await pullStore(name);
+        if (name === "keys" && Array.isArray(data)) {
+          storeCache.keys = data.map((k) => ({
+            ...k,
+            key: String(k.key || "").toLowerCase().trim(),
+            scriptId: k.scriptId != null ? String(k.scriptId) : k.scriptId,
+            userId: k.userId != null ? String(k.userId) : k.userId,
+          }));
+        } else if (data != null) {
+          storeCache[name] = data;
+        }
+      }
+    } catch (e) {
+      console.warn("Periodic store refresh failed:", e.message);
+    }
+  }, 5 * 60 * 1000);
+
   for (const botConfig of BOTS) {
     const client = new Client({
       intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
