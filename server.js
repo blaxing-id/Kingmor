@@ -361,7 +361,18 @@ async function upsertDiscordUser(discordUser) {
     [String(discordUser.id), String(discordUser.username || "Unknown"), avatar]
   );
 
-  return { id: String(discordUser.id), username: discordUser.username, avatar };
+  const row = await pool.query(
+    `SELECT selected_bot FROM users WHERE discord_id = $1`,
+    [String(discordUser.id)]
+  );
+  const selectedBot = row.rows[0]?.selected_bot || null;
+
+  return {
+    id: String(discordUser.id),
+    username: discordUser.username,
+    avatar,
+    selectedBot: selectedBot && ["1","2","3","4"].includes(String(selectedBot)) ? String(selectedBot) : null,
+  };
 }
 
 async function initPostgres() {
@@ -389,11 +400,13 @@ async function initPostgres() {
         discord_id TEXT PRIMARY KEY,
         username TEXT NOT NULL,
         avatar TEXT,
+        selected_bot TEXT,
         first_login TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         last_login TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_bot TEXT`);
 
     // Persistent express-session data: Discord login survives Railway restarts/deploys.
     await client.query(`
@@ -1284,7 +1297,10 @@ app.get("/auth/discord/callback", async (req, res) => {
     const discordUser = userRes.data;
     const persistentUser = await upsertDiscordUser(discordUser);
     req.session.user = persistentUser;
-    // If no bot selected yet → bot selection page
+    // Restore bot choice from PostgreSQL (survives redeploy / new session)
+    if (persistentUser.selectedBot) {
+      req.session.selectedBot = persistentUser.selectedBot;
+    }
     if (!req.session.selectedBot) {
       return res.redirect("/select-bot");
     }
@@ -1303,8 +1319,19 @@ app.get("/logout", (req, res) => {
 app.get("/select-bot", (req, res) => {
   if (!req.session || !req.session.user) return res.redirect("/login");
 
-  const current = req.session.selectedBot || null;
-  const catalog = getBotCatalog();
+  let current = req.session.selectedBot || null;
+  let catalog = [];
+  try {
+    catalog = getBotCatalog();
+  } catch (e) {
+    console.error("getBotCatalog failed:", e);
+    catalog = [
+      { id: "1", name: "Kingmor", tag: "Kingmor#0001", avatar: "https://cdn.discordapp.com/embed/avatars/0.png", invite: BOT_INVITE, clientId: BOT_1_CLIENT_ID, full: true },
+      { id: "2", name: "Kingmor Alt", tag: "Kingmor#0002", avatar: "https://cdn.discordapp.com/embed/avatars/1.png", invite: BOT_INVITE_2, clientId: BOT_2_CLIENT_ID, full: true },
+      { id: "3", name: "Kingmor Bot 3", tag: "Kingmor#0003", avatar: "https://cdn.discordapp.com/embed/avatars/2.png", invite: BOT_INVITE_3, clientId: BOT_3_CLIENT_ID, full: !!BOT_3_CLIENT_ID },
+      { id: "4", name: "Kingmor Bot 4", tag: "Kingmor#0004", avatar: "https://cdn.discordapp.com/embed/avatars/3.png", invite: BOT_INVITE_4, clientId: BOT_4_CLIENT_ID, full: !!BOT_4_CLIENT_ID },
+    ];
+  }
   const rows = catalog.map((b) => {
     const count = getBotServerCount(b.id);
     const selected = current === b.id ? "selected" : "";
@@ -1383,7 +1410,7 @@ async function selectBot(id){
   res.send(page({ req, title: "Kingmor — Choose bot", active: "", body, script, bare: true }));
 });
 
-app.post("/api/select-bot", (req, res) => {
+app.post("/api/select-bot", async (req, res) => {
   if (!req.session || !req.session.user) {
     return res.status(401).json({ error: "Not logged in" });
   }
@@ -1392,6 +1419,15 @@ app.post("/api/select-bot", (req, res) => {
     return res.status(400).json({ error: "Bot must be 1, 2, 3, or 4" });
   }
   req.session.selectedBot = bot;
+  if (req.session.user) req.session.user.selectedBot = bot;
+  try {
+    await pool.query(
+      `UPDATE users SET selected_bot = $2, updated_at = NOW() WHERE discord_id = $1`,
+      [String(req.session.user.id), bot]
+    );
+  } catch (e) {
+    console.error("Failed to persist selected_bot:", e.message);
+  }
   res.json({ ok: true, selectedBot: bot });
 });
 
@@ -2777,11 +2813,14 @@ app.get("/dashboard", requireAuth, (req, res) => {
     <h1>Dashboard</h1>
     <p>Manage your protected scripts. Use the Discord bot for keys, whitelists and panels.</p>
     <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-      <span class="badge ${req.session.selectedBot === "2" ? "free" : "prem"}">
-        Active bot: ${req.session.selectedBot === "2" ? BOT_2_TAG : BOT_1_TAG}
-      </span>
+      ${(() => {
+        const sid = String(req.session.selectedBot || "1");
+        const cat = getBotCatalog().find(b => b.id === sid) || getBotCatalog()[0];
+        const count = getBotServerCount(sid);
+        return `<span class="badge prem">Active bot: ${escapeHtml(cat.tag)} · ${count} servers</span>
       <a class="btn btn-ghost btn-sm" href="/select-bot">Change bot</a>
-      <a class="btn btn-ghost btn-sm" href="${req.session.selectedBot === "2" ? BOT_INVITE_2 : BOT_INVITE}" target="_blank" rel="noopener">Invite this bot</a>
+      <a class="btn btn-ghost btn-sm" href="${cat.invite || BOT_INVITE}" target="_blank" rel="noopener">Invite this bot</a>`;
+      })()}
     </div>
   </div>
 
@@ -3026,42 +3065,4 @@ app.get("/admin/sources", isAdmin, (req, res) => {
   <div class="stats" style="margin-top:0">
     <div class="stat"><b>${totalUsers}</b><span>Total users</span></div>
     <div class="stat"><b>${totalScripts}</b><span>Total scripts</span></div>
-    <div class="stat"><b>${enabledCount}</b><span>Enabled scripts</span></div>
-    <div class="stat"><b>${totalKeys}</b><span>Total keys</span></div>
-  </div>
-
-  <div class="h-row">
-    <h2>Search</h2>
-    <div class="ln"></div>
-  </div>
-  <input id="srcSearch" placeholder="Search by username or script name..." style="margin-bottom:20px">
-
-  <div class="h-row">
-    <h2>All players</h2>
-    <div class="ln"></div>
-  </div>
-
-  <div id="srcList">
-    ${userCards || `<div class="empty">No scripts have been uploaded yet.</div>`}
-  </div>
-</main>
-
-<style>
-.src-user{margin-bottom:22px;padding:20px;border:1px solid var(--line2);border-radius:16px;background:var(--panel)}
-.src-user-head{display:flex;align-items:center;gap:14px;padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:14px;flex-wrap:wrap}
-.src-user-avatar{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,var(--gold),var(--amber));font-size:20px;flex-shrink:0}
-.src-user-name{font-weight:700;font-size:16px;letter-spacing:-.3px}
-.src-user-id{font-size:12px;color:var(--mute);font-family:var(--mono);margin-top:2px}
-.src-user-badges{margin-left:auto}
-.src-user-body{display:grid;gap:12px}
-.src-script{padding:14px;border:1px solid var(--line);border-radius:12px;background:#0e0c0a}
-.src-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start}
-.src-title{font-weight:700;font-size:15px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.src-meta{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mute);font-family:var(--mono);margin-top:8px}
-.src-act{display:flex;gap:8px;flex-wrap:wrap}
-.src-pre{margin-top:12px;max-height:420px;overflow:auto;font-size:12px;line-height:1.55}
-@media(max-width:700px){
-  .src-head{flex-direction:column}
-  .src-act{width:100%}
-  .src-act .btn{flex:1}
-  .src-user-badges{mar
+    <div class="stat"><b>${enabledCount}</b><span>Enabled script
