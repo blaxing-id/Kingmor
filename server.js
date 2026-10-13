@@ -22,7 +22,7 @@ const HWID_COOLDOWN_FILE = path.join(DATA_DIR, "hwid_cooldowns.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 
 const ADMIN_USER_ID = "1485940617342353594";
-const DISCORD_INVITE = "https://discord.gg/KqXUFaqWX";
+const DISCORD_INVITE = "https://discord.gg/QgubzPzzy";
 const BOT_INVITE = "https://discord.com/oauth2/authorize?client_id=1545625902585487370&permissions=2952873984&integration_type=0&scope=bot";
 const BOT_INVITE_2 = "https://discord.com/oauth2/authorize?client_id=1555752792113811506&permissions=277293878288&integration_type=0&scope=bot";
 const BOT_1_NAME = process.env.BOT_1_NAME || "Kingmor";
@@ -41,14 +41,6 @@ const OBF_USAGE_FILE = path.join(DATA_DIR, "obf_usage.json");
 
 fs.mkdirSync(SCRIPTS_DIR, { recursive: true });
 
-if (!fs.existsSync(DB_FILE)) fs.writeFileSync(DB_FILE, "[]", "utf8");
-if (!fs.existsSync(KEYS_FILE)) fs.writeFileSync(KEYS_FILE, "[]", "utf8");
-if (!fs.existsSync(BOT_CONFIG_FILE)) fs.writeFileSync(BOT_CONFIG_FILE, "{}", "utf8");
-if (!fs.existsSync(GUILDS_FILE)) fs.writeFileSync(GUILDS_FILE, "[]", "utf8");
-if (!fs.existsSync(PREMIUM_FILE)) fs.writeFileSync(PREMIUM_FILE, "{}", "utf8");
-if (!fs.existsSync(PREMIUM_KEYS_FILE)) fs.writeFileSync(PREMIUM_KEYS_FILE, "[]", "utf8");
-if (!fs.existsSync(HWID_COOLDOWN_FILE)) fs.writeFileSync(HWID_COOLDOWN_FILE, "{}", "utf8");
-if (!fs.existsSync(OBF_USAGE_FILE)) fs.writeFileSync(OBF_USAGE_FILE, "{}", "utf8");
 
 app.use(express.json({ limit: "30mb" }));
 app.use(express.urlencoded({ extended: true, limit: "30mb" }));
@@ -87,18 +79,6 @@ for (const file of faviconFallbacks) {
   });
 }
 
-app.use(
-  session({
-    secret: process.env.SESSION_SECRET || "kingmor-secret-key-change-this",
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      secure: false,
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    },
-  })
-);
-
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID || "1545625902585487370";
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || "REPLACE_WITH_CLIENT_SECRET";
 const DISCORD_REDIRECT_URI = process.env.DISCORD_REDIRECT_URI || "http://localhost:3000/auth/discord/callback";
@@ -126,6 +106,71 @@ const pool = new Pool({
   connectionTimeoutMillis: 10_000,
   ssl: process.env.PGSSL === "true" ? { rejectUnauthorized: false } : false,
 });
+
+// PostgreSQL-backed session store. This keeps Discord logins alive across Railway restarts.
+class PostgreSQLSessionStore extends session.Store {
+  constructor(pool) {
+    super();
+    this.pool = pool;
+  }
+
+  get(sid, callback) {
+    this.pool.query(
+      `SELECT sess FROM user_sessions WHERE sid = $1 AND expire > NOW()`,
+      [sid]
+    ).then(({ rows }) => callback(null, rows[0] ? rows[0].sess : null))
+      .catch((err) => callback(err));
+  }
+
+  set(sid, sess, callback) {
+    const maxAge = Number(sess?.cookie?.maxAge || 7 * 24 * 60 * 60 * 1000);
+    const expire = sess?.cookie?.expires ? new Date(sess.cookie.expires) : new Date(Date.now() + maxAge);
+    this.pool.query(
+      `INSERT INTO user_sessions (sid, sess, expire)
+       VALUES ($1, $2::jsonb, $3)
+       ON CONFLICT (sid) DO UPDATE
+       SET sess = EXCLUDED.sess, expire = EXCLUDED.expire`,
+      [sid, JSON.stringify(sess), expire]
+    ).then(() => callback && callback(null)).catch((err) => callback && callback(err));
+  }
+
+  destroy(sid, callback) {
+    this.pool.query(`DELETE FROM user_sessions WHERE sid = $1`, [sid])
+      .then(() => callback && callback(null)).catch((err) => callback && callback(err));
+  }
+
+  touch(sid, sess, callback) {
+    const maxAge = Number(sess?.cookie?.maxAge || 7 * 24 * 60 * 60 * 1000);
+    const expire = sess?.cookie?.expires ? new Date(sess.cookie.expires) : new Date(Date.now() + maxAge);
+    this.pool.query(`UPDATE user_sessions SET expire = $2 WHERE sid = $1`, [sid, expire])
+      .then(() => callback && callback(null)).catch((err) => callback && callback(err));
+  }
+
+  clear(callback) {
+    this.pool.query(`DELETE FROM user_sessions`)
+      .then(() => callback && callback(null)).catch((err) => callback && callback(err));
+  }
+
+  length(callback) {
+    this.pool.query(`SELECT COUNT(*)::int AS count FROM user_sessions`)
+      .then(({ rows }) => callback(null, rows[0].count)).catch((err) => callback(err));
+  }
+}
+
+app.use(
+  session({
+    store: new PostgreSQLSessionStore(pool),
+    secret: process.env.SESSION_SECRET || "kingmor-secret-key-change-this",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: process.env.NODE_ENV === "production",
+      httpOnly: true,
+      sameSite: "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    },
+  })
+);
 
 const STORE_KEYS = {
   [DB_FILE]: "scripts",
@@ -231,6 +276,25 @@ function generateId() {
   return crypto.randomBytes(7).toString("hex");
 }
 
+async function upsertDiscordUser(discordUser) {
+  const avatar = discordUser.avatar
+    ? `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png`
+    : `https://cdn.discordapp.com/embed/avatars/0.png`;
+
+  await pool.query(
+    `INSERT INTO users (discord_id, username, avatar, first_login, last_login, updated_at)
+     VALUES ($1, $2, $3, NOW(), NOW(), NOW())
+     ON CONFLICT (discord_id) DO UPDATE
+     SET username = EXCLUDED.username,
+         avatar = EXCLUDED.avatar,
+         last_login = NOW(),
+         updated_at = NOW()`,
+    [String(discordUser.id), String(discordUser.username || "Unknown"), avatar]
+  );
+
+  return { id: String(discordUser.id), username: discordUser.username, avatar };
+}
+
 async function initPostgres() {
   const client = await pool.connect();
   try {
@@ -249,6 +313,29 @@ async function initPostgres() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
+
+    // Persistent Discord users: login/account data lives in PostgreSQL.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        discord_id TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        avatar TEXT,
+        first_login TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_login TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    // Persistent express-session data: Discord login survives Railway restarts/deploys.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS user_sessions (
+        sid TEXT PRIMARY KEY,
+        sess JSONB NOT NULL,
+        expire TIMESTAMPTZ NOT NULL
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS user_sessions_expire_idx ON user_sessions (expire)`);
+    await client.query(`DELETE FROM user_sessions WHERE expire <= NOW()`);
 
     for (const [key, file] of [
       ["scripts", DB_FILE],
@@ -387,12 +474,8 @@ function readScriptSource(script) {
   const cached = scriptSourceCache.get(id);
   if (cached != null) return unprotectSource(cached, id);
 
-  // Legacy/local fallback. Normal Railway operation uses PostgreSQL.
-  const filepath = path.join(SCRIPTS_DIR, script.filename || `${id}.lua`);
-  if (!fs.existsSync(filepath)) return null;
-  const raw = fs.readFileSync(filepath, "utf8");
-  scriptSourceCache.set(id, raw);
-  return unprotectSource(raw, id);
+  // PostgreSQL is the source of truth. Local Lua files are only migration input at startup.
+  return null;
 }
 
 // ==================== LUA OBFUSCATOR (high-compat KM-OBF) ====================
@@ -1128,13 +1211,8 @@ app.get("/auth/discord/callback", async (req, res) => {
       headers: { Authorization: `Bearer ${access_token}` },
     });
     const discordUser = userRes.data;
-    req.session.user = {
-      id: discordUser.id,
-      username: discordUser.username,
-      avatar: discordUser.avatar
-        ? `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png`
-        : `https://cdn.discordapp.com/embed/avatars/0.png`,
-    };
+    const persistentUser = await upsertDiscordUser(discordUser);
+    req.session.user = persistentUser;
     // If no bot selected yet → bot selection page
     if (!req.session.selectedBot) {
       return res.redirect("/select-bot");
