@@ -27,6 +27,7 @@ const BOTS = [];
 
 if (process.env.BOT_TOKEN || process.env.BOT_TOKEN_1) {
   BOTS.push({
+    id: "1",
     name: "Bot-1",
     token: process.env.BOT_TOKEN || process.env.BOT_TOKEN_1,
     clientId: process.env.DISCORD_CLIENT_ID_1 || process.env.DISCORD_CLIENT_ID || "1545625902585487370"
@@ -34,14 +35,31 @@ if (process.env.BOT_TOKEN || process.env.BOT_TOKEN_1) {
 }
 if (process.env.BOT_TOKEN_2) {
   BOTS.push({
+    id: "2",
     name: "Bot-2",
     token: process.env.BOT_TOKEN_2,
-    clientId: process.env.DISCORD_CLIENT_ID_2 || process.env.DISCORD_CLIENT_ID || "1545625902585487370"
+    clientId: process.env.DISCORD_CLIENT_ID_2 || process.env.DISCORD_CLIENT_ID || "1555752792113811506"
+  });
+}
+if (process.env.BOT_TOKEN_3) {
+  BOTS.push({
+    id: "3",
+    name: "Bot-3",
+    token: process.env.BOT_TOKEN_3,
+    clientId: process.env.DISCORD_CLIENT_ID_3 || ""
+  });
+}
+if (process.env.BOT_TOKEN_4) {
+  BOTS.push({
+    id: "4",
+    name: "Bot-4",
+    token: process.env.BOT_TOKEN_4,
+    clientId: process.env.DISCORD_CLIENT_ID_4 || ""
   });
 }
 
 if (BOTS.length === 0) {
-  console.error("❌ FATAL: Tidak ada BOT_TOKEN / BOT_TOKEN_1 / BOT_TOKEN_2 yang di-set!");
+  console.error("❌ FATAL: Set at least BOT_TOKEN / BOT_TOKEN_1 (optional: BOT_TOKEN_2/3/4)!");
   process.exit(1);
 }
 
@@ -513,16 +531,23 @@ const resetHwidUserTempData = new Map();
 const clients = []; // semua Client yang aktif
 
 // ==================== GUILDS LIST ====================
-async function updateGuildsList(client) {
+async function updateGuildsList(client, botConfig = null) {
   if (!client) return;
   try {
     const guilds = client.guilds.cache.map(g => ({
       id: g.id, name: g.name, icon: g.icon, memberCount: g.memberCount
     }));
+    const botId = botConfig?.id || "1";
     await axios.post(`${CONFIG.apiBase}/api/admin/guilds/update`,
-      { guilds }, { headers: internalHeaders, timeout: 8000 }
+      {
+        guilds,
+        botId,
+        botName: client.user?.tag || botConfig?.name || null,
+        clientId: botConfig?.clientId || null,
+      },
+      { headers: internalHeaders, timeout: 8000 }
     );
-    console.log(`✅ [${client.user?.tag || "bot"}] Updated guilds list: ${guilds.length} guilds`);
+    console.log(`✅ [${client.user?.tag || "bot"}] Bot ${botId}: ${guilds.length} servers`);
   } catch (err) {
     console.error(`❌ Failed to update guilds list: ${describeAxiosError(err)}`);
   }
@@ -1017,8 +1042,8 @@ function attachClientHandlers(client, botConfig) {
       console.log(`📢 Discord: ${PREMIUM_INFO.discord}`);
       console.log(`🔐 Owner ID: ${OWNER_ID}`);
       console.log(`🆔 Client ID: ${botConfig.clientId}`);
-      await updateGuildsList(client);
-      setInterval(() => updateGuildsList(client), 60 * 1000);
+      await updateGuildsList(client, botConfig);
+      setInterval(() => updateGuildsList(client, botConfig), 60 * 1000);
     } catch (err) {
       console.error(`❌ [${botConfig.name}] Failed to register commands:`, err);
     }
@@ -1026,12 +1051,12 @@ function attachClientHandlers(client, botConfig) {
 
   client.on("guildCreate", async (guild) => {
     console.log(`✅ [${botConfig.name}] Joined guild: ${guild.name} (${guild.id})`);
-    await updateGuildsList(client);
+    await updateGuildsList(client, botConfig);
   });
 
   client.on("guildDelete", async (guild) => {
     console.log(`❌ [${botConfig.name}] Left guild: ${guild.name} (${guild.id})`);
-    await updateGuildsList(client);
+    await updateGuildsList(client, botConfig);
   });
 
   // Attach shared interaction handler
