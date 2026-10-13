@@ -84,6 +84,12 @@ const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID || "1545625902585487370"
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || "REPLACE_WITH_CLIENT_SECRET";
 const DISCORD_REDIRECT_URI = process.env.DISCORD_REDIRECT_URI || "";
 
+function getDiscordRedirectUri(req) {
+  if (DISCORD_REDIRECT_URI) return DISCORD_REDIRECT_URI;
+  const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
+  return `${protocol}://${req.get("host")}/auth/discord/callback`;
+}
+
 const API_SECRET = process.env.API_SECRET;
 
 if (!API_SECRET) {
