@@ -22,7 +22,7 @@ const HWID_COOLDOWN_FILE = path.join(DATA_DIR, "hwid_cooldowns.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 
 const ADMIN_USER_ID = "1485940617342353594";
-const DISCORD_INVITE = "https://discord.gg/QgubzPzzy";
+const DISCORD_INVITE = "https://discord.gg/KqXUFaqWX";
 const BOT_INVITE = "https://discord.com/oauth2/authorize?client_id=1545625902585487370&permissions=2952873984&integration_type=0&scope=bot";
 const BOT_INVITE_2 = "https://discord.com/oauth2/authorize?client_id=1555752792113811506&permissions=277293878288&integration_type=0&scope=bot";
 const BOT_1_NAME = process.env.BOT_1_NAME || "Kingmor";
