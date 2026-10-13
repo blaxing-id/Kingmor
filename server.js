@@ -7,6 +7,7 @@ const axios = require("axios");
 const { Pool } = require("pg");
 
 const app = express();
+app.set("trust proxy", 1);
 const PORT = process.env.PORT || 3000;
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
@@ -22,7 +23,7 @@ const HWID_COOLDOWN_FILE = path.join(DATA_DIR, "hwid_cooldowns.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 
 const ADMIN_USER_ID = "1485940617342353594";
-const DISCORD_INVITE = "https://discord.gg/QgubzPzzy";
+const DISCORD_INVITE = "https://discord.gg/KqXUFaqWX";
 const BOT_INVITE = "https://discord.com/oauth2/authorize?client_id=1545625902585487370&permissions=2952873984&integration_type=0&scope=bot";
 const BOT_INVITE_2 = "https://discord.com/oauth2/authorize?client_id=1555752792113811506&permissions=277293878288&integration_type=0&scope=bot";
 const BOT_1_NAME = process.env.BOT_1_NAME || "Kingmor";
@@ -81,7 +82,7 @@ for (const file of faviconFallbacks) {
 
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID || "1545625902585487370";
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || "REPLACE_WITH_CLIENT_SECRET";
-const DISCORD_REDIRECT_URI = process.env.DISCORD_REDIRECT_URI || "http://localhost:3000/auth/discord/callback";
+const DISCORD_REDIRECT_URI = process.env.DISCORD_REDIRECT_URI || "";
 
 const API_SECRET = process.env.API_SECRET;
 
@@ -1184,7 +1185,7 @@ app.get("/login", (req, res) => {
 app.get("/auth/discord", (req, res) => {
   const params = new URLSearchParams({
     client_id: DISCORD_CLIENT_ID,
-    redirect_uri: DISCORD_REDIRECT_URI,
+    redirect_uri: getDiscordRedirectUri(req),
     response_type: "code",
     scope: "identify",
   });
@@ -1202,7 +1203,7 @@ app.get("/auth/discord/callback", async (req, res) => {
         client_secret: DISCORD_CLIENT_SECRET,
         grant_type: "authorization_code",
         code,
-        redirect_uri: DISCORD_REDIRECT_URI,
+        redirect_uri: getDiscordRedirectUri(req),
       }),
       { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
