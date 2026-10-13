@@ -24,14 +24,61 @@ const PUBLIC_DIR = path.join(__dirname, "public");
 
 const ADMIN_USER_ID = "1485940617342353594";
 const DISCORD_INVITE = "https://discord.gg/KqXUFaqWX";
-const BOT_INVITE = "https://discord.com/oauth2/authorize?client_id=1545625902585487370&permissions=2952873984&integration_type=0&scope=bot";
-const BOT_INVITE_2 = "https://discord.com/oauth2/authorize?client_id=1555752792113811506&permissions=277293878288&integration_type=0&scope=bot";
+const DEFAULT_BOT_PERMS = "277293878288";
+function botInviteUrl(clientId) {
+  if (!clientId) return "#";
+  return `https://discord.com/oauth2/authorize?client_id=${clientId}&permissions=${DEFAULT_BOT_PERMS}&integration_type=0&scope=bot`;
+}
+
+const BOT_1_CLIENT_ID = process.env.DISCORD_CLIENT_ID_1 || process.env.DISCORD_CLIENT_ID || "1545625902585487370";
+const BOT_2_CLIENT_ID = process.env.DISCORD_CLIENT_ID_2 || "1555752792113811506";
+const BOT_3_CLIENT_ID = process.env.DISCORD_CLIENT_ID_3 || "";
+const BOT_4_CLIENT_ID = process.env.DISCORD_CLIENT_ID_4 || "";
+
+const BOT_INVITE = process.env.BOT_INVITE_1 || botInviteUrl(BOT_1_CLIENT_ID);
+const BOT_INVITE_2 = process.env.BOT_INVITE_2 || botInviteUrl(BOT_2_CLIENT_ID);
+const BOT_INVITE_3 = process.env.BOT_INVITE_3 || botInviteUrl(BOT_3_CLIENT_ID);
+const BOT_INVITE_4 = process.env.BOT_INVITE_4 || botInviteUrl(BOT_4_CLIENT_ID);
+
 const BOT_1_NAME = process.env.BOT_1_NAME || "Kingmor";
 const BOT_1_TAG = process.env.BOT_1_TAG || "Kingmor#0001";
 const BOT_1_AVATAR = process.env.BOT_1_AVATAR || "https://cdn.discordapp.com/embed/avatars/0.png";
 const BOT_2_NAME = process.env.BOT_2_NAME || "Kingmor Alt";
 const BOT_2_TAG = process.env.BOT_2_TAG || "Kingmor#0002";
 const BOT_2_AVATAR = process.env.BOT_2_AVATAR || "https://cdn.discordapp.com/embed/avatars/1.png";
+const BOT_3_NAME = process.env.BOT_3_NAME || "Kingmor Bot 3";
+const BOT_3_TAG = process.env.BOT_3_TAG || "Kingmor#0003";
+const BOT_3_AVATAR = process.env.BOT_3_AVATAR || "https://cdn.discordapp.com/embed/avatars/2.png";
+const BOT_4_NAME = process.env.BOT_4_NAME || "Kingmor Bot 4";
+const BOT_4_TAG = process.env.BOT_4_TAG || "Kingmor#0004";
+const BOT_4_AVATAR = process.env.BOT_4_AVATAR || "https://cdn.discordapp.com/embed/avatars/3.png";
+
+const BOT_STATS_FILE = path.join(DATA_DIR, "bot_stats.json");
+
+/** Catalog of selectable bots for the website */
+function getBotCatalog() {
+  return [
+    { id: "1", name: BOT_1_NAME, tag: BOT_1_TAG, avatar: BOT_1_AVATAR, invite: BOT_INVITE, clientId: BOT_1_CLIENT_ID, full: true },
+    { id: "2", name: BOT_2_NAME, tag: BOT_2_TAG, avatar: BOT_2_AVATAR, invite: BOT_INVITE_2, clientId: BOT_2_CLIENT_ID, full: true },
+    { id: "3", name: BOT_3_NAME, tag: BOT_3_TAG, avatar: BOT_3_AVATAR, invite: BOT_INVITE_3, clientId: BOT_3_CLIENT_ID, full: !!BOT_3_CLIENT_ID },
+    { id: "4", name: BOT_4_NAME, tag: BOT_4_TAG, avatar: BOT_4_AVATAR, invite: BOT_INVITE_4, clientId: BOT_4_CLIENT_ID, full: !!BOT_4_CLIENT_ID },
+  ];
+}
+
+function readBotStats() {
+  return readJSON(BOT_STATS_FILE, {});
+}
+function writeBotStats(data) {
+  return writeJSON(BOT_STATS_FILE, data && typeof data === "object" ? data : {});
+}
+function getBotServerCount(botId) {
+  const stats = readBotStats();
+  const entry = stats[String(botId)];
+  if (!entry) return 0;
+  if (typeof entry.guildCount === "number") return entry.guildCount;
+  if (Array.isArray(entry.guilds)) return entry.guilds.length;
+  return 0;
+}
 const PREMIUM_PRICE_IDR = "Rp 20.000";
 const PREMIUM_PRICE_USD = "$2";
 const SCRIPT_LIMIT = { free: 2, premium: 10 };
@@ -190,6 +237,7 @@ const STORE_KEYS = {
   [HWID_COOLDOWN_FILE]: "hwid_cooldowns",
   [OBF_USAGE_FILE]: "obf_usage",
   [BLACKLIST_FILE]: "blacklist",
+  [BOT_STATS_FILE]: "bot_stats",
 };
 
 const STORE_DEFAULTS = {
@@ -202,6 +250,7 @@ const STORE_DEFAULTS = {
   hwid_cooldowns: {},
   obf_usage: {},
   blacklist: [],
+  bot_stats: {},
 };
 
 const memoryStore = {};
@@ -367,6 +416,7 @@ async function initPostgres() {
       ["hwid_cooldowns", HWID_COOLDOWN_FILE],
       ["obf_usage", OBF_USAGE_FILE],
       ["blacklist", BLACKLIST_FILE],
+      ["bot_stats", BOT_STATS_FILE],
     ]) {
       const result = await client.query("SELECT value FROM app_store WHERE key = $1", [key]);
       if (result.rowCount) {
@@ -1254,31 +1304,34 @@ app.get("/select-bot", (req, res) => {
   if (!req.session || !req.session.user) return res.redirect("/login");
 
   const current = req.session.selectedBot || null;
+  const catalog = getBotCatalog();
+  const rows = catalog.map((b) => {
+    const count = getBotServerCount(b.id);
+    const selected = current === b.id ? "selected" : "";
+    const status = b.full
+      ? `<div class="bot-status ready">● Ready · <b>${count}</b> server${count === 1 ? "" : "s"}</div>`
+      : `<div class="bot-status available">● Set DISCORD_CLIENT_ID_${b.id} · <b>${count}</b> servers</div>`;
+    const inviteDisabled = (!b.clientId || b.invite === "#") ? "opacity:.5;pointer-events:none" : "";
+    return `
+      <div class="bot-row ${selected}" data-bot="${b.id}" onclick="selectBot('${b.id}')">
+        <img class="bot-avatar" src="${b.avatar}" alt="${escapeHtml(b.tag)}" onerror="this.src='https://cdn.discordapp.com/embed/avatars/0.png'">
+        <div class="bot-meta">
+          <div class="bot-tag">${escapeHtml(b.tag)}</div>
+          ${status}
+        </div>
+        <a class="btn btn-ghost btn-sm bot-invite" style="${inviteDisabled}" href="${b.invite}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Invite</a>
+      </div>`;
+  }).join("");
+
   const body = `
 <main class="wrap center">
   <div class="card bot-pick-card">
     <div class="brand" style="justify-content:center;margin-bottom:8px"><i>👑</i>Kingmor</div>
     <h1 style="text-align:center">Choose your bot</h1>
-    <p style="text-align:center;margin-bottom:28px">Select which bot you want to use with this account. You can change it later from the dashboard.</p>
+    <p style="text-align:center;margin-bottom:28px">Select which bot you want to use. Server counts update automatically when each bot is online.</p>
 
     <div class="bot-list">
-      <div class="bot-row ${current === "1" ? "selected" : ""}" data-bot="1" onclick="selectBot('1')">
-        <img class="bot-avatar" src="${BOT_1_AVATAR}" alt="${BOT_1_TAG}" onerror="this.src='https://cdn.discordapp.com/embed/avatars/0.png'">
-        <div class="bot-meta">
-          <div class="bot-tag">${BOT_1_TAG}</div>
-          <div class="bot-status ready">● Ready</div>
-        </div>
-        <a class="btn btn-ghost btn-sm bot-invite" href="${BOT_INVITE}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Invite</a>
-      </div>
-
-      <div class="bot-row ${current === "2" ? "selected" : ""}" data-bot="2" onclick="selectBot('2')">
-        <img class="bot-avatar" src="${BOT_2_AVATAR}" alt="${BOT_2_TAG}" onerror="this.src='https://cdn.discordapp.com/embed/avatars/1.png'">
-        <div class="bot-meta">
-          <div class="bot-tag">${BOT_2_TAG}</div>
-          <div class="bot-status available">● Available — invite first</div>
-        </div>
-        <a class="btn btn-ghost btn-sm bot-invite" href="${BOT_INVITE_2}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Invite</a>
-      </div>
+      ${rows}
     </div>
 
     ${current ? `<a class="btn btn-gold btn-block" style="margin-top:22px" href="/dashboard">Continue to Dashboard →</a>` : `<p class="bot-hint">Click a bot row to select it</p>`}
@@ -1286,7 +1339,7 @@ app.get("/select-bot", (req, res) => {
 </main>
 
 <style>
-.bot-pick-card{width:min(480px,100%);padding:36px 28px}
+.bot-pick-card{width:min(520px,100%);padding:36px 28px}
 .bot-list{display:flex;flex-direction:column;gap:12px}
 .bot-row{
   display:flex;align-items:center;gap:14px;
@@ -1297,49 +1350,37 @@ app.get("/select-bot", (req, res) => {
 .bot-row:hover{border-color:rgba(242,193,78,.45);background:#14110e;transform:translateY(-1px)}
 .bot-row.selected{
   border-color:rgba(242,193,78,.7);
-  background:linear-gradient(135deg,rgba(242,193,78,.12),rgba(224,138,0,.04));
-  box-shadow:0 0 0 1px rgba(242,193,78,.25),0 12px 32px rgba(0,0,0,.35)
+  background:linear-gradient(135deg,rgba(242,193,78,.08),rgba(224,138,0,.04));
+  box-shadow:0 0 0 1px rgba(242,193,78,.25)
 }
-.bot-avatar{
-  width:48px;height:48px;border-radius:50%;
-  border:2px solid var(--line2);object-fit:cover;flex-shrink:0;
-  background:#1a1612
-}
-.bot-row.selected .bot-avatar{border-color:var(--gold)}
+.bot-avatar{width:48px;height:48px;border-radius:50%;border:2px solid var(--line2);object-fit:cover;flex-shrink:0}
 .bot-meta{flex:1;min-width:0}
-.bot-tag{font-weight:700;font-size:15px;letter-spacing:-.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.bot-status{font-size:12px;font-weight:600;margin-top:2px}
+.bot-tag{font-weight:700;font-size:15px;letter-spacing:-.2px}
+.bot-status{font-size:12px;margin-top:4px;color:var(--mute)}
 .bot-status.ready{color:var(--ok)}
-.bot-status.available{color:var(--amber)}
-.bot-invite{flex-shrink:0;min-width:78px}
-.bot-hint{text-align:center;margin-top:18px;font-size:13px;color:var(--mute)}
-</style>`;
+.bot-status.available{color:var(--gold)}
+.bot-status b{color:var(--ink);font-weight:700}
+.bot-invite{flex-shrink:0}
+.bot-hint{text-align:center;color:var(--mute);font-size:13px;margin-top:18px}
+</style>
+`;
 
   const script = `
-async function selectBot(id) {
-  try {
-    var r = await fetch('/api/select-bot', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bot: id })
+async function selectBot(id){
+  try{
+    var r=await fetch('/api/select-bot',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bot:id})});
+    var d=await r.json().catch(function(){return {};});
+    if(!r.ok){toast(d.error||'Failed to select bot','err');return;}
+    document.querySelectorAll('.bot-row').forEach(function(el){
+      el.classList.toggle('selected', el.getAttribute('data-bot')===String(id));
     });
-    var d = await r.json();
-    if (!r.ok) { toast(d.error || 'Failed to save', 'err'); return; }
-    toast('Bot selected', 'ok');
-    setTimeout(function(){ location.href = '/dashboard'; }, 700);
-  } catch (e) {
-    toast('Server error', 'err');
-  }
-}`;
+    toast('Bot selected','ok');
+    setTimeout(function(){ location.href='/dashboard'; }, 350);
+  }catch(e){toast('Server error','err');}
+}
+`;
 
-  res.send(page({
-    req,
-    title: "Kingmor — Choose Bot",
-    active: "",
-    body,
-    script,
-    bare: true
-  }));
+  res.send(page({ req, title: "Kingmor — Choose bot", active: "", body, script, bare: true }));
 });
 
 app.post("/api/select-bot", (req, res) => {
@@ -1347,8 +1388,8 @@ app.post("/api/select-bot", (req, res) => {
     return res.status(401).json({ error: "Not logged in" });
   }
   const bot = String(req.body?.bot || "");
-  if (bot !== "1" && bot !== "2") {
-    return res.status(400).json({ error: "Bot must be 1 or 2" });
+  if (!["1", "2", "3", "4"].includes(bot)) {
+    return res.status(400).json({ error: "Bot must be 1, 2, 3, or 4" });
   }
   req.session.selectedBot = bot;
   res.json({ ok: true, selectedBot: bot });
@@ -2227,7 +2268,7 @@ app.get("/files/loaders/:id.lua", (req, res) => {
 // ==================== INTERNAL STORE SYNC (bot.js ↔ PostgreSQL) ====================
 const INTERNAL_STORE_NAMES = new Set([
   "keys", "botconfig", "blacklist", "premium", "premium_keys",
-  "hwid_cooldowns", "obf_usage", "guilds", "scripts",
+  "hwid_cooldowns", "obf_usage", "guilds", "scripts", "bot_stats",
 ]);
 
 function storeFileFor(name) {
@@ -2235,6 +2276,7 @@ function storeFileFor(name) {
     keys: KEYS_FILE,
     botconfig: BOT_CONFIG_FILE,
     blacklist: BLACKLIST_FILE,
+    bot_stats: BOT_STATS_FILE,
     premium: PREMIUM_FILE,
     premium_keys: PREMIUM_KEYS_FILE,
     hwid_cooldowns: HWID_COOLDOWN_FILE,
@@ -2324,11 +2366,37 @@ app.get("/api/admin/guilds", isAdmin, (req, res) => {
   res.json(readJSON(GUILDS_FILE, []));
 });
 
-app.post("/api/admin/guilds/update", requireInternalSecret, (req, res) => {
-  const { guilds } = req.body;
+app.post("/api/admin/guilds/update", requireInternalSecret, async (req, res) => {
+  const { guilds, botId, botName, clientId } = req.body || {};
   if (!guilds || !Array.isArray(guilds)) return res.status(400).json({ error: "Invalid guilds data" });
-  writeJSON(GUILDS_FILE, guilds);
-  res.json({ success: true });
+
+  const id = String(botId || "1");
+  const stats = readBotStats();
+  stats[id] = {
+    guildCount: guilds.length,
+    guilds: guilds.map((g) => ({
+      id: g.id,
+      name: g.name,
+      memberCount: g.memberCount || 0,
+    })),
+    botName: botName || null,
+    clientId: clientId || null,
+    updatedAt: new Date().toISOString(),
+  };
+  await writeBotStats(stats);
+
+  // Keep a merged list for homepage stats (unique guild ids)
+  const merged = new Map();
+  for (const entry of Object.values(stats)) {
+    if (!entry || !Array.isArray(entry.guilds)) continue;
+    for (const g of entry.guilds) {
+      if (g && g.id) merged.set(String(g.id), g);
+    }
+  }
+  await writeJSON(GUILDS_FILE, Array.from(merged.values()));
+
+  console.log(`📊 Bot ${id} guilds updated: ${guilds.length}`);
+  res.json({ success: true, botId: id, guildCount: guilds.length });
 });
 
 app.get("/api/admin/scripts", isAdmin, (req, res) => {
@@ -2996,136 +3064,4 @@ app.get("/admin/sources", isAdmin, (req, res) => {
   .src-head{flex-direction:column}
   .src-act{width:100%}
   .src-act .btn{flex:1}
-  .src-user-badges{margin-left:0}
-}
-</style>
-
-<script>
-async function viewSource(id, btn){
-  var pre = document.getElementById('src-' + id);
-  if (pre.style.display === 'block') {
-    pre.style.display = 'none';
-    btn.textContent = 'View Source';
-    return;
-  }
-  btn.disabled = true;
-  btn.textContent = 'Loading...';
-  pre.style.display = 'block';
-  pre.textContent = '// Loading source...';
-  try {
-    var r = await fetch('/api/scripts/' + id + '/source/admin');
-    if (!r.ok) {
-      pre.textContent = '// Failed to load source (HTTP ' + r.status + ')';
-      btn.disabled = false;
-      btn.textContent = 'View Source';
-      return;
-    }
-    var d = await r.json();
-    pre.textContent = d.source || '// Empty source';
-    btn.disabled = false;
-    btn.textContent = 'Hide Source';
-  } catch (e) {
-    pre.textContent = '// Error: ' + e.message;
-    btn.disabled = false;
-    btn.textContent = 'View Source';
-  }
-}
-
-function downloadSource(id, name) {
-  // Direct file download via dedicated endpoint (session cookie is sent automatically)
-  var a = document.createElement('a');
-  a.href = '/api/scripts/' + id + '/source/admin/download';
-  a.download = '';
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  if (typeof toast === 'function') toast('Downloading...', 'ok');
-}
-
-function copyLoader(url){
-  copyText('loadstring(game:HttpGet("' + url + '"))()');
-}
-
-document.getElementById('srcSearch').addEventListener('input', function(e){
-  var q = e.target.value.toLowerCase().trim();
-  document.querySelectorAll('.src-user').forEach(function(card){
-    var text = card.textContent.toLowerCase();
-    card.style.display = (!q || text.includes(q)) ? '' : 'none';
-  });
-});
-</script>`;
-
-  res.send(page({
-    req,
-    title: "Kingmor — Player Source",
-    active: "sources",
-    body,
-  }));
-});
-
-// ==================== ADMIN PAGE ====================
-
-app.get("/admin/dashboard", isAdmin, (req, res) => {
-  const db = readDB();
-  const keys = readKeys();
-  const premium = readPremium();
-  const pkeys = readPremiumKeys();
-
-  const rows = [
-    ["Total scripts", db.length],
-    ["Total users", new Set(db.map((s) => s.ownerId)).size],
-    ["Total keys", keys.length],
-    ["Enabled scripts", db.filter((s) => s.enabled).length],
-    ["Premium users", Object.keys(premium).filter((id) => isPremium(id)).length],
-    ["Premium keys (unused)", pkeys.filter((k) => !k.redeemedBy).length],
-    ["Premium keys (redeemed)", pkeys.filter((k) => k.redeemedBy).length],
-  ];
-  const body = `<main class="wrap center"><div class="card" style="width:min(560px,100%)">
-    <h1>Admin overview</h1>
-    <div class="kv">${rows.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join("")}</div>
-    <div class="stack">
-      <a class="btn btn-gold btn-block" href="/admin/sources">🕵️ Player Source</a>
-      <a class="btn btn-ghost btn-block" href="/dashboard">Back to dashboard</a>
-    </div>
-  </div></main>`;
-  res.send(page({ req, title: "Kingmor — Admin", active: "admin", body, bare: true }));
-});
-
-// ==================== HEALTH CHECK ====================
-app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok", uptime: process.uptime() });
-});
-
-// ==================== START ====================
-async function startServer() {
-  try {
-    await initPostgres();
-    app.listen(PORT, () => {
-      console.log(`Kingmor running on port ${PORT}`);
-      console.log(`PostgreSQL: connected`);
-      console.log(`API_SECRET loaded: ${API_SECRET ? "yes (" + API_SECRET.length + " chars)" : "NO"}`);
-      console.log(`Premium price: ${PREMIUM_PRICE_IDR} / ${PREMIUM_PRICE_USD}`);
-      console.log(`Script limits: free ${SCRIPT_LIMIT.free}, premium ${SCRIPT_LIMIT.premium}`);
-    });
-  } catch (err) {
-    console.error("❌ PostgreSQL startup failed:", err);
-    process.exit(1);
-  }
-}
-
-async function shutdown(signal) {
-  console.log(`\n${signal} received. Waiting for database writes...`);
-  try {
-    await dbWriteQueue;
-    await pool.end();
-  } catch (e) {
-    console.error("Shutdown error:", e.message);
-  } finally {
-    process.exit(0);
-  }
-}
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
-
-startServer();
+  .src-user-badges{mar
