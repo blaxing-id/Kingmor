@@ -39,6 +39,7 @@ const SCRIPT_LIMIT = { free: 2, premium: 10 };
 const MAX_SOURCE_CHARS = 25 * 1024 * 1024;
 const OBF_LIMIT = { free: 5, premium: 15 };
 const OBF_USAGE_FILE = path.join(DATA_DIR, "obf_usage.json");
+const BLACKLIST_FILE = path.join(DATA_DIR, "blacklist.json");
 
 fs.mkdirSync(SCRIPTS_DIR, { recursive: true });
 
@@ -188,6 +189,7 @@ const STORE_KEYS = {
   [PREMIUM_KEYS_FILE]: "premium_keys",
   [HWID_COOLDOWN_FILE]: "hwid_cooldowns",
   [OBF_USAGE_FILE]: "obf_usage",
+  [BLACKLIST_FILE]: "blacklist",
 };
 
 const STORE_DEFAULTS = {
@@ -199,6 +201,7 @@ const STORE_DEFAULTS = {
   premium_keys: [],
   hwid_cooldowns: {},
   obf_usage: {},
+  blacklist: [],
 };
 
 const memoryStore = {};
@@ -282,6 +285,16 @@ function incObfUsed(userId) {
 function generateId() {
   return crypto.randomBytes(7).toString("hex");
 }
+function normalizeKey(k) {
+  return String(k || "").toLowerCase().trim();
+}
+function findKeyRecord(allKeys, providedKey, scriptId) {
+  const nk = normalizeKey(providedKey);
+  const sid = String(scriptId || "");
+  return (allKeys || []).find(k =>
+    normalizeKey(k.key) === nk && String(k.scriptId || "") === sid
+  ) || null;
+}
 
 async function upsertDiscordUser(discordUser) {
   const avatar = discordUser.avatar
@@ -353,6 +366,7 @@ async function initPostgres() {
       ["premium_keys", PREMIUM_KEYS_FILE],
       ["hwid_cooldowns", HWID_COOLDOWN_FILE],
       ["obf_usage", OBF_USAGE_FILE],
+      ["blacklist", BLACKLIST_FILE],
     ]) {
       const result = await client.query("SELECT value FROM app_store WHERE key = $1", [key]);
       if (result.rowCount) {
@@ -1847,9 +1861,12 @@ app.get("/api/hwid/check", (req, res) => {
   }
 
   const keys = readKeys();
-  const keyData = keys.find(k => k.key === key.toLowerCase().trim() && k.scriptId === scriptId);
+  const keyData = findKeyRecord(keys, key, scriptId);
 
-  if (!keyData) return res.json({ valid: false, reason: "Invalid Key" });
+  if (!keyData) {
+    console.warn(`[hwid/check] Invalid Key scriptId=${scriptId} key=${normalizeKey(key).slice(0, 8)}... totalKeys=${keys.length}`);
+    return res.json({ valid: false, reason: "Invalid Key" });
+  }
   if (keyData.expiry && new Date(keyData.expiry) < new Date()) {
     return res.json({ valid: false, reason: "Key Expired" });
   }
@@ -2011,8 +2028,11 @@ return`;
     if (isFreeMode) return { ok: true };
     if (!providedKey) return { ok: false, reason: "No Key Provided" };
     const allKeys = readKeys();
-    const keyData = allKeys.find(k => k.key === providedKey && k.scriptId === scriptId);
-    if (!keyData) return { ok: false, reason: "Invalid Key" };
+    const keyData = findKeyRecord(allKeys, providedKey, scriptId);
+    if (!keyData) {
+      console.warn(`[loader] Invalid Key scriptId=${scriptId} key=${normalizeKey(providedKey).slice(0, 8)}... totalKeys=${allKeys.length}`);
+      return { ok: false, reason: "Invalid Key" };
+    }
     if (keyData.expiry && new Date(keyData.expiry) < new Date()) return { ok: false, reason: "Key Expired" };
     return { ok: true, keyData };
   }
@@ -2202,6 +2222,80 @@ app.get("/files/loaders/:id.lua", (req, res) => {
 });
 
 // ==================== FREEMODE ====================
+
+
+// ==================== INTERNAL STORE SYNC (bot.js ↔ PostgreSQL) ====================
+const INTERNAL_STORE_NAMES = new Set([
+  "keys", "botconfig", "blacklist", "premium", "premium_keys",
+  "hwid_cooldowns", "obf_usage", "guilds", "scripts",
+]);
+
+function storeFileFor(name) {
+  const map = {
+    keys: KEYS_FILE,
+    botconfig: BOT_CONFIG_FILE,
+    blacklist: BLACKLIST_FILE,
+    premium: PREMIUM_FILE,
+    premium_keys: PREMIUM_KEYS_FILE,
+    hwid_cooldowns: HWID_COOLDOWN_FILE,
+    obf_usage: OBF_USAGE_FILE,
+    guilds: GUILDS_FILE,
+    scripts: DB_FILE,
+  };
+  return map[name] || null;
+}
+
+app.get("/api/internal/store/:name", requireInternalSecret, (req, res) => {
+  const name = String(req.params.name || "");
+  if (!INTERNAL_STORE_NAMES.has(name)) return res.status(400).json({ error: "Unknown store" });
+  const file = storeFileFor(name);
+  const fallback = STORE_DEFAULTS[name];
+  const data = readJSON(file, fallback);
+  res.json(data);
+});
+
+app.post("/api/internal/store/:name", requireInternalSecret, async (req, res) => {
+  const name = String(req.params.name || "");
+  if (!INTERNAL_STORE_NAMES.has(name)) return res.status(400).json({ error: "Unknown store" });
+  if (req.body == null || req.body.data === undefined) {
+    return res.status(400).json({ error: "Body must be { data: ... }" });
+  }
+  const data = req.body.data;
+  const expected = STORE_DEFAULTS[name];
+  if (Array.isArray(expected) && !Array.isArray(data)) {
+    return res.status(400).json({ error: "Expected array data" });
+  }
+  if (expected && !Array.isArray(expected) && (typeof data !== "object" || data === null || Array.isArray(data))) {
+    return res.status(400).json({ error: "Expected object data" });
+  }
+  const file = storeFileFor(name);
+  await writeJSON(file, data);
+  console.log(`📦 Store synced from bot: ${name}`);
+  res.json({ success: true, name });
+});
+
+// Convenience: list keys for a script (debug / bot)
+app.get("/api/keys/internal", requireInternalSecret, (req, res) => {
+  const scriptId = req.query.scriptId ? String(req.query.scriptId) : null;
+  let keys = readKeys();
+  if (scriptId) keys = keys.filter(k => String(k.scriptId) === scriptId);
+  res.json(keys);
+});
+
+app.post("/api/keys/sync", requireInternalSecret, async (req, res) => {
+  const keys = req.body?.keys;
+  if (!Array.isArray(keys)) return res.status(400).json({ error: "keys array required" });
+  // Normalize all keys to lowercase for consistent matching
+  const normalized = keys.map(k => ({
+    ...k,
+    key: normalizeKey(k.key),
+    scriptId: k.scriptId != null ? String(k.scriptId) : k.scriptId,
+    userId: k.userId != null ? String(k.userId) : k.userId,
+  }));
+  await writeKeys(normalized);
+  console.log(`🔑 Keys synced from bot: ${normalized.length} total`);
+  res.json({ success: true, count: normalized.length });
+});
 
 app.get("/api/freemode/:guildId/:scriptId", requireInternalSecret, (req, res) => {
   const { guildId, scriptId } = req.params;
