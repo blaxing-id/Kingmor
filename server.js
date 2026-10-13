@@ -3065,4 +3065,188 @@ app.get("/admin/sources", isAdmin, (req, res) => {
   <div class="stats" style="margin-top:0">
     <div class="stat"><b>${totalUsers}</b><span>Total users</span></div>
     <div class="stat"><b>${totalScripts}</b><span>Total scripts</span></div>
-    <div class="stat"><b>${enabledCount}</b><span>Enabled script
+    <div class="stat"><b>${enabledCount}</b><span>Enabled scripts</span></div>
+    <div class="stat"><b>${totalKeys}</b><span>Total keys</span></div>
+  </div>
+
+  <div class="h-row">
+    <h2>Search</h2>
+    <div class="ln"></div>
+  </div>
+  <input id="srcSearch" placeholder="Search by username or script name..." style="margin-bottom:20px">
+
+  <div class="h-row">
+    <h2>All players</h2>
+    <div class="ln"></div>
+  </div>
+
+  <div id="srcList">
+    ${userCards || `<div class="empty">No scripts have been uploaded yet.</div>`}
+  </div>
+</main>
+
+<style>
+.src-user{margin-bottom:22px;padding:20px;border:1px solid var(--line2);border-radius:16px;background:var(--panel)}
+.src-user-head{display:flex;align-items:center;gap:14px;padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:14px;flex-wrap:wrap}
+.src-user-avatar{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,var(--gold),var(--amber));font-size:20px;flex-shrink:0}
+.src-user-name{font-weight:700;font-size:16px;letter-spacing:-.3px}
+.src-user-id{font-size:12px;color:var(--mute);font-family:var(--mono);margin-top:2px}
+.src-user-badges{margin-left:auto}
+.src-user-body{display:grid;gap:12px}
+.src-script{padding:14px;border:1px solid var(--line);border-radius:12px;background:#0e0c0a}
+.src-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start}
+.src-title{font-weight:700;font-size:15px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.src-meta{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mute);font-family:var(--mono);margin-top:8px}
+.src-act{display:flex;gap:8px;flex-wrap:wrap}
+.src-pre{margin-top:12px;max-height:420px;overflow:auto;font-size:12px;line-height:1.55}
+@media(max-width:700px){
+  .src-head{flex-direction:column}
+  .src-act{width:100%}
+  .src-act .btn{flex:1}
+  .src-user-badges{margin-left:0}
+}
+</style>
+
+<script>
+async function viewSource(id, btn){
+  var pre = document.getElementById('src-' + id);
+  if (pre.style.display === 'block') {
+    pre.style.display = 'none';
+    btn.textContent = 'View Source';
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Loading...';
+  pre.style.display = 'block';
+  pre.textContent = '// Loading source...';
+  try {
+    var r = await fetch('/api/scripts/' + id + '/source/admin');
+    if (!r.ok) {
+      pre.textContent = '// Failed to load source (HTTP ' + r.status + ')';
+      btn.disabled = false;
+      btn.textContent = 'View Source';
+      return;
+    }
+    var d = await r.json();
+    pre.textContent = d.source || '// Empty source';
+    btn.disabled = false;
+    btn.textContent = 'Hide Source';
+  } catch (e) {
+    pre.textContent = '// Error: ' + e.message;
+    btn.disabled = false;
+    btn.textContent = 'View Source';
+  }
+}
+
+function downloadSource(id, name) {
+  // Direct file download via dedicated endpoint (session cookie is sent automatically)
+  var a = document.createElement('a');
+  a.href = '/api/scripts/' + id + '/source/admin/download';
+  a.download = '';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  if (typeof toast === 'function') toast('Downloading...', 'ok');
+}
+
+function copyLoader(url){
+  copyText('loadstring(game:HttpGet("' + url + '"))()');
+}
+
+document.getElementById('srcSearch').addEventListener('input', function(e){
+  var q = e.target.value.toLowerCase().trim();
+  document.querySelectorAll('.src-user').forEach(function(card){
+    var text = card.textContent.toLowerCase();
+    card.style.display = (!q || text.includes(q)) ? '' : 'none';
+  });
+});
+</script>`;
+
+  res.send(page({
+    req,
+    title: "Kingmor — Player Source",
+    active: "sources",
+    body,
+  }));
+});
+
+// ==================== ADMIN PAGE ====================
+
+app.get("/admin/dashboard", isAdmin, (req, res) => {
+  const db = readDB();
+  const keys = readKeys();
+  const premium = readPremium();
+  const pkeys = readPremiumKeys();
+
+  const rows = [
+    ["Total scripts", db.length],
+    ["Total users", new Set(db.map((s) => s.ownerId)).size],
+    ["Total keys", keys.length],
+    ["Enabled scripts", db.filter((s) => s.enabled).length],
+    ["Premium users", Object.keys(premium).filter((id) => isPremium(id)).length],
+    ["Premium keys (unused)", pkeys.filter((k) => !k.redeemedBy).length],
+    ["Premium keys (redeemed)", pkeys.filter((k) => k.redeemedBy).length],
+  ];
+  const body = `<main class="wrap center"><div class="card" style="width:min(560px,100%)">
+    <h1>Admin overview</h1>
+    <div class="kv">${rows.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join("")}</div>
+    <div class="stack">
+      <a class="btn btn-gold btn-block" href="/admin/sources">🕵️ Player Source</a>
+      <a class="btn btn-ghost btn-block" href="/dashboard">Back to dashboard</a>
+    </div>
+  </div></main>`;
+  res.send(page({ req, title: "Kingmor — Admin", active: "admin", body, bare: true }));
+});
+
+// ==================== HEALTH CHECK ====================
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    uptime: process.uptime(),
+    databaseReady: !!databaseReady,
+  });
+});
+
+// ==================== START ====================
+async function startServer() {
+  // Listen first so Railway does not show 502 while DB is connecting
+  app.listen(PORT, () => {
+    console.log(`Kingmor running on port ${PORT}`);
+    console.log(`API_SECRET loaded: ${API_SECRET ? "yes (" + API_SECRET.length + " chars)" : "NO"}`);
+    console.log(`Premium price: ${PREMIUM_PRICE_IDR} / ${PREMIUM_PRICE_USD}`);
+    console.log(`Script limits: free ${SCRIPT_LIMIT.free}, premium ${SCRIPT_LIMIT.premium}`);
+  });
+
+  const maxAttempts = 10;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await initPostgres();
+      console.log(`PostgreSQL: connected`);
+      return;
+    } catch (err) {
+      console.error(`❌ PostgreSQL startup attempt ${attempt}/${maxAttempts} failed:`, err.message || err);
+      if (attempt === maxAttempts) {
+        console.error("❌ PostgreSQL still unavailable after retries. Process stays up for /health; fix DATABASE_URL and redeploy.");
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 2000 * attempt));
+    }
+  }
+}
+
+async function shutdown(signal) {
+  console.log(`\n${signal} received. Waiting for database writes...`);
+  try {
+    await dbWriteQueue;
+    await pool.end();
+  } catch (e) {
+    console.error("Shutdown error:", e.message);
+  } finally {
+    process.exit(0);
+  }
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+startServer();
