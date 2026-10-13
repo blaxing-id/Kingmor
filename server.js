@@ -4,6 +4,7 @@ const path = require("path");
 const crypto = require("crypto");
 const session = require("express-session");
 const axios = require("axios");
+const { Pool } = require("pg");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -109,25 +110,93 @@ if (!API_SECRET) {
   process.exit(1);
 }
 
-// ==================== DATA HELPERS ====================
+// ==================== POSTGRESQL DATA STORE ====================
+// Railway PostgreSQL is the persistent database. The app keeps a small in-memory
+// cache so the rest of the existing server can continue using synchronous helpers.
+const DATABASE_URL = process.env.DATABASE_URL;
+if (!DATABASE_URL) {
+  console.error("❌ FATAL: env var DATABASE_URL is not set!");
+  process.exit(1);
+}
+
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  max: Number(process.env.PG_POOL_MAX || 10),
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 10_000,
+  ssl: process.env.PGSSL === "true" ? { rejectUnauthorized: false } : false,
+});
+
+const STORE_KEYS = {
+  [DB_FILE]: "scripts",
+  [KEYS_FILE]: "keys",
+  [BOT_CONFIG_FILE]: "botconfig",
+  [GUILDS_FILE]: "guilds",
+  [PREMIUM_FILE]: "premium",
+  [PREMIUM_KEYS_FILE]: "premium_keys",
+  [HWID_COOLDOWN_FILE]: "hwid_cooldowns",
+  [OBF_USAGE_FILE]: "obf_usage",
+};
+
+const STORE_DEFAULTS = {
+  scripts: [],
+  keys: [],
+  botconfig: {},
+  guilds: [],
+  premium: {},
+  premium_keys: [],
+  hwid_cooldowns: {},
+  obf_usage: {},
+};
+
+const memoryStore = {};
+const scriptSourceCache = new Map();
+let databaseReady = false;
+let dbWriteQueue = Promise.resolve();
+
 function readJSON(file, fallback) {
+  const key = STORE_KEYS[file];
+  if (databaseReady && key && Object.prototype.hasOwnProperty.call(memoryStore, key)) {
+    return memoryStore[key];
+  }
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; }
 }
-function writeJSON(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+
+function queueStoreWrite(key, data) {
+  memoryStore[key] = data;
+  dbWriteQueue = dbWriteQueue
+    .then(() => pool.query(
+      `INSERT INTO app_store (key, value, updated_at)
+       VALUES ($1, $2::jsonb, NOW())
+       ON CONFLICT (key)
+       DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+      [key, JSON.stringify(data)]
+    ))
+    .catch((err) => console.error(`❌ PostgreSQL write failed for ${key}:`, err.message));
+  return dbWriteQueue;
 }
+
+function writeJSON(file, data) {
+  const key = STORE_KEYS[file];
+  if (!key) {
+    fs.writeFileSync(file, JSON.stringify(data, null, 2));
+    return Promise.resolve();
+  }
+  return queueStoreWrite(key, data);
+}
+
 function readDB() { return readJSON(DB_FILE, []); }
-function writeDB(data) { writeJSON(DB_FILE, data); }
+function writeDB(data) { return writeJSON(DB_FILE, data); }
 function readKeys() { return readJSON(KEYS_FILE, []); }
-function writeKeys(data) { writeJSON(KEYS_FILE, data); }
+function writeKeys(data) { return writeJSON(KEYS_FILE, data); }
 function readBotConfig() { return readJSON(BOT_CONFIG_FILE, {}); }
-function writeBotConfig(data) { writeJSON(BOT_CONFIG_FILE, data); }
+function writeBotConfig(data) { return writeJSON(BOT_CONFIG_FILE, data); }
 function readPremium() { return readJSON(PREMIUM_FILE, {}); }
-function writePremium(data) { writeJSON(PREMIUM_FILE, data); }
+function writePremium(data) { return writeJSON(PREMIUM_FILE, data); }
 function readPremiumKeys() { return readJSON(PREMIUM_KEYS_FILE, []); }
-function writePremiumKeys(data) { writeJSON(PREMIUM_KEYS_FILE, data); }
+function writePremiumKeys(data) { return writeJSON(PREMIUM_KEYS_FILE, data); }
 function readCooldowns() { return readJSON(HWID_COOLDOWN_FILE, {}); }
-function writeCooldowns(data) { writeJSON(HWID_COOLDOWN_FILE, data); }
+function writeCooldowns(data) { return writeJSON(HWID_COOLDOWN_FILE, data); }
 
 function isPremium(userId) {
   const p = readPremium();
@@ -140,7 +209,7 @@ function scriptLimitFor(userId) {
   return isPremium(userId) ? SCRIPT_LIMIT.premium : SCRIPT_LIMIT.free;
 }
 function readObfUsage() { return readJSON(OBF_USAGE_FILE, {}); }
-function writeObfUsage(data) { writeJSON(OBF_USAGE_FILE, data); }
+function writeObfUsage(data) { return writeJSON(OBF_USAGE_FILE, data); }
 function obfLimitFor(userId) {
   return isPremium(userId) ? OBF_LIMIT.premium : OBF_LIMIT.free;
 }
@@ -160,6 +229,114 @@ function incObfUsed(userId) {
 }
 function generateId() {
   return crypto.randomBytes(7).toString("hex");
+}
+
+async function initPostgres() {
+  const client = await pool.connect();
+  try {
+    await client.query("SELECT 1");
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS app_store (
+        key TEXT PRIMARY KEY,
+        value JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS script_sources (
+        script_id TEXT PRIMARY KEY,
+        protected_source TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    for (const [key, file] of [
+      ["scripts", DB_FILE],
+      ["keys", KEYS_FILE],
+      ["botconfig", BOT_CONFIG_FILE],
+      ["guilds", GUILDS_FILE],
+      ["premium", PREMIUM_FILE],
+      ["premium_keys", PREMIUM_KEYS_FILE],
+      ["hwid_cooldowns", HWID_COOLDOWN_FILE],
+      ["obf_usage", OBF_USAGE_FILE],
+    ]) {
+      const result = await client.query("SELECT value FROM app_store WHERE key = $1", [key]);
+      if (result.rowCount) {
+        memoryStore[key] = result.rows[0].value;
+      } else {
+        let value = STORE_DEFAULTS[key];
+        try {
+          if (fs.existsSync(file)) value = JSON.parse(fs.readFileSync(file, "utf8"));
+        } catch (e) {
+          console.warn(`⚠️ Could not migrate ${file}:`, e.message);
+        }
+        memoryStore[key] = value;
+        await client.query(
+          `INSERT INTO app_store (key, value, updated_at) VALUES ($1, $2::jsonb, NOW())`,
+          [key, JSON.stringify(value)]
+        );
+      }
+    }
+
+    const sourceRows = await client.query("SELECT script_id, protected_source FROM script_sources");
+    for (const row of sourceRows.rows) {
+      scriptSourceCache.set(String(row.script_id), row.protected_source);
+    }
+
+    // Migrate old protected Lua files into PostgreSQL once.
+    const scripts = Array.isArray(memoryStore.scripts) ? memoryStore.scripts : [];
+    let scriptsChanged = false;
+    for (const script of scripts) {
+      const id = String(script.id || "");
+      if (!id || scriptSourceCache.has(id)) continue;
+      const filepath = path.join(SCRIPTS_DIR, script.filename || `${id}.lua`);
+      if (!fs.existsSync(filepath)) continue;
+      const protectedSource = fs.readFileSync(filepath, "utf8");
+      await client.query(
+        `INSERT INTO script_sources (script_id, protected_source, updated_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (script_id) DO UPDATE SET protected_source = EXCLUDED.protected_source, updated_at = NOW()`,
+        [id, protectedSource]
+      );
+      scriptSourceCache.set(id, protectedSource);
+      scriptsChanged = true;
+    }
+
+    if (scriptsChanged) {
+      console.log("✅ Existing script source files migrated to PostgreSQL.");
+    }
+
+    databaseReady = true;
+    console.log("✅ PostgreSQL connected and data store initialized.");
+  } finally {
+    client.release();
+  }
+}
+
+async function saveScriptSource(scriptId, protectedSource) {
+  const id = String(scriptId);
+  scriptSourceCache.set(id, protectedSource);
+  try {
+    await pool.query(
+      `INSERT INTO script_sources (script_id, protected_source, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (script_id)
+       DO UPDATE SET protected_source = EXCLUDED.protected_source, updated_at = NOW()`,
+      [id, protectedSource]
+    );
+  } catch (e) {
+    console.error("❌ PostgreSQL script source write failed:", e.message);
+  }
+}
+
+async function deleteScriptSource(scriptId) {
+  const id = String(scriptId);
+  scriptSourceCache.delete(id);
+  try {
+    await pool.query("DELETE FROM script_sources WHERE script_id = $1", [id]);
+  } catch (e) {
+    console.error("❌ PostgreSQL script source delete failed:", e.message);
+  }
 }
 
 // ==================== SOURCE PROTECTION (Kingmor KM1) ====================
@@ -206,10 +383,16 @@ function unprotectSource(stored, scriptId) {
 }
 
 function readScriptSource(script) {
-  const filepath = path.join(SCRIPTS_DIR, script.filename);
+  const id = String(script?.id || "");
+  const cached = scriptSourceCache.get(id);
+  if (cached != null) return unprotectSource(cached, id);
+
+  // Legacy/local fallback. Normal Railway operation uses PostgreSQL.
+  const filepath = path.join(SCRIPTS_DIR, script.filename || `${id}.lua`);
   if (!fs.existsSync(filepath)) return null;
   const raw = fs.readFileSync(filepath, "utf8");
-  return unprotectSource(raw, script.id);
+  scriptSourceCache.set(id, raw);
+  return unprotectSource(raw, id);
 }
 
 // ==================== LUA OBFUSCATOR (high-compat KM-OBF) ====================
@@ -1200,7 +1383,7 @@ app.get("/api/scripts/:id/source/admin/download", (req, res) => {
   return res.send(source);
 });
 
-app.post("/api/scripts", requireAuth, (req, res) => {
+app.post("/api/scripts", requireAuth, async (req, res) => {
   const { name, source, guildId } = req.body;
   if (!name || typeof name !== "string") return res.status(400).json({ error: "Script name is required" });
   if (!source || typeof source !== "string") return res.status(400).json({ error: "Lua source is required" });
@@ -1225,7 +1408,6 @@ app.post("/api/scripts", requireAuth, (req, res) => {
   // KM1 protect-at-rest (obfuscation applied at loader time so each run is unique)
   const wantObf = req.body.obfuscate === true || req.body.obfuscate === "true" || req.body.obfuscate === 1;
   const protectedPayload = protectSource(source, id);
-  fs.writeFileSync(path.join(SCRIPTS_DIR, filename), protectedPayload, "utf8");
 
   const script = {
     id, name: name.trim().slice(0, 100), filename, enabled: true,
@@ -1238,6 +1420,7 @@ app.post("/api/scripts", requireAuth, (req, res) => {
 
   db.push(script);
   writeDB(db);
+  await saveScriptSource(id, protectedPayload);
 
   console.log(`✅ Script created: "${script.name}" (${script.id}) by ${script.ownerId}`);
 
@@ -1249,7 +1432,7 @@ app.post("/api/scripts", requireAuth, (req, res) => {
   });
 });
 
-app.put("/api/scripts/:id", requireAuth, (req, res) => {
+app.put("/api/scripts/:id", requireAuth, async (req, res) => {
   const { name, source } = req.body;
   const db = readDB();
   const script = db.find((x) => x.id === req.params.id);
@@ -1270,8 +1453,8 @@ app.put("/api/scripts/:id", requireAuth, (req, res) => {
     if (source.length > MAX_SOURCE_CHARS) {
       return res.status(413).json({ error: `File too large. Maximum ${Math.floor(MAX_SOURCE_CHARS / (1024 * 1024))}MB.` });
     }
-    const filepath = path.join(SCRIPTS_DIR, script.filename);
-    fs.writeFileSync(filepath, protectSource(source, script.id), "utf8");
+    const protectedPayload = protectSource(source, script.id);
+    await saveScriptSource(script.id, protectedPayload);
     script.protected = true;
     if (req.body.obfuscate !== undefined) {
       script.obfuscated = req.body.obfuscate === true || req.body.obfuscate === "true" || req.body.obfuscate === 1;
@@ -1301,20 +1484,19 @@ app.post("/api/scripts/:id/toggle", requireAuth, (req, res) => {
   res.json({ success: true, enabled: script.enabled });
 });
 
-app.delete("/api/scripts/:id", requireAuth, (req, res) => {
+app.delete("/api/scripts/:id", requireAuth, async (req, res) => {
   const db = readDB();
   const index = db.findIndex((x) => x.id === req.params.id);
   if (index === -1) return res.status(404).json({ error: "Script not found" });
   if (db[index].ownerId !== req.session.user.id) return res.status(403).json({ error: "Forbidden" });
   const script = db[index];
-  const filepath = path.join(SCRIPTS_DIR, script.filename);
-  if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
+  await deleteScriptSource(script.id);
   db.splice(index, 1);
   writeDB(db);
   res.json({ success: true });
 });
 
-app.delete("/api/scripts/internal/:id", requireInternalSecret, (req, res) => {
+app.delete("/api/scripts/internal/:id", requireInternalSecret, async (req, res) => {
   const requestOwnerId = req.headers["x-owner-id"];
   if (!requestOwnerId) return res.status(400).json({ error: "x-owner-id header required" });
   const db = readDB();
@@ -1322,8 +1504,7 @@ app.delete("/api/scripts/internal/:id", requireInternalSecret, (req, res) => {
   if (index === -1) return res.status(404).json({ error: "Script not found" });
   if (String(db[index].ownerId) !== String(requestOwnerId)) return res.status(403).json({ error: "You do not own this script" });
   const script = db[index];
-  const filepath = path.join(SCRIPTS_DIR, script.filename);
-  if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
+  await deleteScriptSource(script.id);
   db.splice(index, 1);
   writeDB(db);
   res.json({ success: true, name: script.name });
@@ -1967,7 +2148,7 @@ app.get("/api/admin/guilds", isAdmin, (req, res) => {
 app.post("/api/admin/guilds/update", requireInternalSecret, (req, res) => {
   const { guilds } = req.body;
   if (!guilds || !Array.isArray(guilds)) return res.status(400).json({ error: "Invalid guilds data" });
-  fs.writeFileSync(GUILDS_FILE, JSON.stringify(guilds, null, 2));
+  writeJSON(GUILDS_FILE, guilds);
   res.json({ success: true });
 });
 
@@ -2537,9 +2718,8 @@ app.get("/admin/sources", isAdmin, (req, res) => {
 
   const userCards = users.map(u => {
     const scriptCards = u.scripts.map(s => {
-      const filepath = path.join(SCRIPTS_DIR, s.filename);
-      const exists = fs.existsSync(filepath);
-      const size = exists ? fs.statSync(filepath).size : 0;
+      const sourceForSize = readScriptSource(s);
+      const size = sourceForSize ? Buffer.byteLength(sourceForSize, "utf8") : 0;
       const sizeStr = size > 1024 * 1024
         ? (size / 1024 / 1024).toFixed(2) + " MB"
         : size > 1024 ? (size / 1024).toFixed(1) + " KB" : size + " B";
@@ -2739,9 +2919,34 @@ app.get("/health", (req, res) => {
 });
 
 // ==================== START ====================
-app.listen(PORT, () => {
-  console.log(`Kingmor running on port ${PORT}`);
-  console.log(`API_SECRET loaded: ${API_SECRET ? "yes (" + API_SECRET.length + " chars)" : "NO"}`);
-  console.log(`Premium price: ${PREMIUM_PRICE_IDR} / ${PREMIUM_PRICE_USD}`);
-  console.log(`Script limits: free ${SCRIPT_LIMIT.free}, premium ${SCRIPT_LIMIT.premium}`);
-});
+async function startServer() {
+  try {
+    await initPostgres();
+    app.listen(PORT, () => {
+      console.log(`Kingmor running on port ${PORT}`);
+      console.log(`PostgreSQL: connected`);
+      console.log(`API_SECRET loaded: ${API_SECRET ? "yes (" + API_SECRET.length + " chars)" : "NO"}`);
+      console.log(`Premium price: ${PREMIUM_PRICE_IDR} / ${PREMIUM_PRICE_USD}`);
+      console.log(`Script limits: free ${SCRIPT_LIMIT.free}, premium ${SCRIPT_LIMIT.premium}`);
+    });
+  } catch (err) {
+    console.error("❌ PostgreSQL startup failed:", err);
+    process.exit(1);
+  }
+}
+
+async function shutdown(signal) {
+  console.log(`\n${signal} received. Waiting for database writes...`);
+  try {
+    await dbWriteQueue;
+    await pool.end();
+  } catch (e) {
+    console.error("Shutdown error:", e.message);
+  } finally {
+    process.exit(0);
+  }
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+startServer();
