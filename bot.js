@@ -1250,7 +1250,7 @@ async function handleInteraction(interaction) {
             return interaction.editReply({ content: "❌ Your key has expired!" }).catch(() => {});
           }
 
-          const loaderCode = `script_key = "${validKey.key}"\nloadstring(game:HttpGet("${CONFIG.apiBase}/api/loader/${validKey.scriptId}.lua?key="..script_key))()`;
+          const loaderCode = `script_key = "${validKey.key}"\nloadstring(game:HttpGet("${CONFIG.apiBase}/api/loader/${validKey.scriptId}.lua"))()`;
           return interaction.editReply({ content: `\`\`\`lua\n${loaderCode}\n\`\`\`` }).catch(() => {});
         } catch (err) {
           console.error("Get script error:", err);
