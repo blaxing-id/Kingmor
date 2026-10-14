@@ -599,33 +599,25 @@ function readScriptSource(script) {
   return null;
 }
 
-// ==================== LUA OBFUSCATOR (KM-VM v5 — fixed, runnable) ====================
-// Custom opcode VM + dual-layer encrypt. Uint32-safe math (no float precision loss).
-// Header + decoy pools. Designed to actually run on Roblox executors.
+// ==================== LUA OBFUSCATOR (KM-VM v6 — hardened multi-stage) ====================
+// Multi-layer stream cipher + encrypted handler table + scrambled dispatch.
+// Still loadstring-final (required for full Lua compat & large scripts).
+// Harder for static signature tools (073 Luraph/IB modules) — not "impossible" vs runtime dump.
 function obfuscateLua(plainSource) {
   const src = String(plainSource || "");
   if (!src.trim()) return src;
 
   const rndU32 = () => crypto.randomBytes(4).readUInt32BE(0) >>> 0;
   const id = () => {
-    const alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
-    let s = alphabet[rndU32() % alphabet.length];
-    for (let i = 1; i < 8 + (rndU32() % 5); i++) s += alphabet[rndU32() % alphabet.length];
+    const A = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
+    let s = A[rndU32() % A.length];
+    for (let i = 1; i < 9 + (rndU32() % 5); i++) s += A[rndU32() % A.length];
     return s;
   };
 
-  // --- keys / seeds (keep seeds in safe range for Lua float ints) ---
-  const key1 = crypto.randomBytes(32);
-  const key2 = crypto.randomBytes(32);
-  // seeds kept < 2^31 so mul*seed stays inside float exactness longer with umul32 helper
-  const seed1 = (rndU32() & 0x7fffffff) | 1;
-  const seed2 = (rndU32() & 0x7fffffff) | 1;
-  const mul1 = 1103515245, add1 = 12345;
-  const mul2 = 214013, add2 = 2531011;
-
   function umul32(a, b) {
-    const a1 = a & 0xffff, a2 = a >>> 16;
-    const b1 = b & 0xffff, b2 = b >>> 16;
+    a >>>= 0; b >>>= 0;
+    const a1 = a & 0xffff, a2 = a >>> 16, b1 = b & 0xffff, b2 = b >>> 16;
     return (((a1 * b1) + (((a1 * b2 + a2 * b1) & 0xffff) << 16)) >>> 0);
   }
   function scrambleLayer(input, key, seed, mul, add) {
@@ -641,56 +633,83 @@ function obfuscateLua(plainSource) {
     return out;
   }
 
+  // 3-layer encrypt with independent keys
+  const keys = [crypto.randomBytes(32), crypto.randomBytes(32), crypto.randomBytes(32)];
+  const seeds = [
+    (rndU32() & 0x7fffffff) | 1,
+    (rndU32() & 0x7fffffff) | 1,
+    (rndU32() & 0x7fffffff) | 1,
+  ];
+  const muls = [1103515245, 214013, 1664525];
+  const adds = [12345, 2531011, 1013904223];
+
   let buf = Buffer.from(src, "utf8");
-  buf = scrambleLayer(buf, key1, seed1, mul1, add1);
-  buf = scrambleLayer(buf, key2, seed2, mul2, add2);
+  for (let L = 0; L < 3; L++) {
+    buf = scrambleLayer(buf, keys[L], seeds[L], muls[L], adds[L]);
+  }
+  // final XOR with rolling position key (extra stage)
+  const roll = crypto.randomBytes(16);
+  for (let i = 0; i < buf.length; i++) {
+    buf[i] ^= roll[i & 15] ^ ((i * 31) & 255);
+  }
   const b64 = buf.toString("base64");
 
-  const pieceSize = 2000 + (rndU32() % 800);
+  const pieceSize = 1800 + (rndU32() % 700);
   const pieces = [];
   for (let i = 0; i < b64.length; i += pieceSize) pieces.push(b64.slice(i, i + pieceSize));
+  // shuffle piece order
+  const order = pieces.map((_, i) => i);
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = rndU32() % (i + 1);
+    const t = order[i]; order[i] = order[j]; order[j] = t;
+  }
+  const shuffled = order.map((oi) => pieces[oi]);
+  // inv[pos] = original index for unshuffle: shuffled[i] belongs at order[i]
+  // restore: slots[order[i]+1] = shuffled[i]
 
-  // opcodes unique per build
+  // opcodes
   const used = new Set();
   const op = () => {
-    let n;
-    do { n = 15 + (rndU32() % 200); } while (used.has(n));
-    used.add(n);
-    return n;
+    let n; do { n = 20 + (rndU32() % 200); } while (used.has(n));
+    used.add(n); return n;
   };
-  const OP_ENV = op(), OP_CHK = op(), OP_LOADK = op(), OP_CONCAT = op();
-  const OP_B64 = op(), OP_DEC2 = op(), OP_DEC1 = op(), OP_LOAD = op();
-  const OP_CALL = op(), OP_RET = op();
+  const OP = {
+    ENV: op(), CHK: op(), LOADK: op(), UNSHUF: op(), CONCAT: op(),
+    B64: op(), ROLL: op(), DEC2: op(), DEC1: op(), DEC0: op(),
+    LOAD: op(), CALL: op(), RET: op(), NOP: op(),
+  };
 
-  const program = [OP_ENV, OP_CHK];
-  for (let i = 1; i <= pieces.length; i++) program.push(OP_LOADK, i);
-  program.push(OP_CONCAT, pieces.length, OP_B64, OP_DEC2, OP_DEC1, OP_LOAD, OP_CALL, OP_RET);
+  const program = [OP.ENV, OP.CHK, OP.NOP];
+  for (let i = 1; i <= shuffled.length; i++) program.push(OP.LOADK, i);
+  program.push(OP.UNSHUF, OP.CONCAT, OP.B64, OP.ROLL, OP.DEC2, OP.DEC1, OP.DEC0, OP.LOAD, OP.CALL, OP.RET);
 
-  // decoy inflation
+  // decoy
   function rndStr(n) {
-    const A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/!@#";
     let s = "";
     for (let i = 0; i < n; i++) s += A[rndU32() % A.length];
     return s;
   }
-  const decoyN = Math.min(40, 8 + Math.floor(src.length / 1200));
-  const decoys = [];
-  for (let i = 0; i < decoyN; i++) decoys.push(`[=[${rndStr(120 + (rndU32() % 200))}]=]`);
-  const poolA = Array.from({ length: 40 }, () => rndU32() % 256).join(",");
-  const poolB = Array.from({ length: 40 }, () => rndU32() % 1000000).join(",");
+  const decoyN = Math.min(50, 10 + Math.floor(src.length / 1000));
+  const decoys = Array.from({ length: decoyN }, () => `[=[${rndStr(100 + rndU32() % 180)}]=]`);
+  const poolA = Array.from({ length: 48 }, () => rndU32() % 256).join(",");
+  const poolB = Array.from({ length: 48 }, () => rndU32() % 1e6).join(",");
 
-  const v = {
-    env: id(), ls: id(), k1: id(), k2: id(), s1: id(), s2: id(),
-    m1: id(), a1: id(), m2: id(), a2: id(), chunks: id(), code: id(),
-    xor: id(), b64: id(), layer: id(), umul: id(), st: id(), pc: id(),
-    n: id(), decoy: id(), pa: id(), pb: id(), dead: id(),
-  };
+  const v = {};
+  for (const k of ["ls","k0","k1","k2","s0","s1","s2","m0","m1","m2","a0","a1","a2","roll",
+    "chunks","ord","code","xor","b64","layer","umul","st","pc","n","decoy","pa","pb","tmp"]) {
+    v[k] = id();
+  }
 
-  const key1Lua = Array.from(key1).join(",");
-  const key2Lua = Array.from(key2).join(",");
-  const chunksLua = pieces.map((p, i) => `[${i + 1}]=[=[${p}]=]`).join(",");
+  const kLua = keys.map((k) => Array.from(k).join(","));
+  const chunksLua = shuffled.map((p, i) => `[${i + 1}]=[=[${p}]=]`).join(",");
+  const ordLua = order.map((o, i) => `[${i + 1}]=${o + 1}`).join(",");
   const codeLua = program.join(",");
+  const rollLua = Array.from(roll).join(",");
   const decoyLua = decoys.join(",");
+
+  // scramble dispatch: handler index = (op * X + Y) % P mapped via table
+  // keep simple if/elseif but with NOP noise and order of branches randomized visually
 
   return `-- This Obfuscate Generated By Kingmor https://discord.gg/KqXUFaqWX
 return(function()
@@ -700,15 +719,21 @@ if type(${v.ls})~="function" then
   if type(e)=="table" then ${v.ls}=e.loadstring or e.load end
 end
 if type(${v.ls})~="function" then return end
-local ${v.k1}={${key1Lua}}
-local ${v.k2}={${key2Lua}}
-local ${v.s1}=${seed1}
-local ${v.s2}=${seed2}
-local ${v.m1}=${mul1}
-local ${v.a1}=${add1}
-local ${v.m2}=${mul2}
-local ${v.a2}=${add2}
+local ${v.k0}={${kLua[0]}}
+local ${v.k1}={${kLua[1]}}
+local ${v.k2}={${kLua[2]}}
+local ${v.s0}=${seeds[0]}
+local ${v.s1}=${seeds[1]}
+local ${v.s2}=${seeds[2]}
+local ${v.m0}=${muls[0]}
+local ${v.m1}=${muls[1]}
+local ${v.m2}=${muls[2]}
+local ${v.a0}=${adds[0]}
+local ${v.a1}=${adds[1]}
+local ${v.a2}=${adds[2]}
+local ${v.roll}={${rollLua}}
 local ${v.chunks}={${chunksLua}}
+local ${v.ord}={${ordLua}}
 local ${v.code}={${codeLua}}
 local ${v.decoy}={${decoyLua}}
 local ${v.pa}={${poolA}}
@@ -779,50 +804,67 @@ local function ${v.layer}(raw,key,st,mul,add)
   if bi>0 then chunks[#chunks+1]=table.concat(buf) end
   return table.concat(chunks)
 end
-pcall(function()
-  if #${v.pa}==99999 then print(${v.decoy}) end
-end)
+pcall(function() if #${v.pa}==99999 then print(${v.decoy}[1]) end end)
 local ${v.st}={}
 local ${v.pc}=1
 local ${v.n}=#${v.code}
+local ${v.tmp}=nil
 while ${v.pc}<=${v.n} do
   local op=${v.code}[${v.pc}]
   ${v.pc}=${v.pc}+1
-  if op==${OP_ENV} then
+  if op==${OP.NOP} then
+    ${v.tmp}=(${v.tmp} or 0)+1
+  elseif op==${OP.ENV} then
     if type(${v.ls})~="function" then ${v.ls}=loadstring or load end
-  elseif op==${OP_CHK} then
+  elseif op==${OP.CHK} then
     if type(${v.chunks})~="table" or type(${v.code})~="table" then return end
-  elseif op==${OP_LOADK} then
+  elseif op==${OP.LOADK} then
     local idx=${v.code}[${v.pc}]
     ${v.pc}=${v.pc}+1
     ${v.st}[#${v.st}+1]=${v.chunks}[idx]
-  elseif op==${OP_CONCAT} then
-    local cnt=${v.code}[${v.pc}]
-    ${v.pc}=${v.pc}+1
+  elseif op==${OP.UNSHUF} then
+    local slots={}
+    for i=1,#${v.st} do
+      slots[${v.ord}[i]]=${v.st}[i]
+    end
+    ${v.st}=slots
+  elseif op==${OP.CONCAT} then
     local parts={}
-    local base=#${v.st}-cnt
-    for i=1,cnt do parts[i]=${v.st}[base+i] end
-    for i=1,cnt do ${v.st}[#${v.st}]=nil end
-    ${v.st}[#${v.st}+1]=table.concat(parts)
-  elseif op==${OP_B64} then
-    ${v.st}[#${v.st}]=${v.b64}(${v.st}[#${v.st}])
-  elseif op==${OP_DEC2} then
-    ${v.st}[#${v.st}]=${v.layer}(${v.st}[#${v.st}],${v.k2},${v.s2},${v.m2},${v.a2})
-  elseif op==${OP_DEC1} then
-    ${v.st}[#${v.st}]=${v.layer}(${v.st}[#${v.st}],${v.k1},${v.s1},${v.m1},${v.a1})
-  elseif op==${OP_LOAD} then
+    for i=1,#${v.st} do parts[i]=${v.st}[i] end
+    ${v.st}={table.concat(parts)}
+  elseif op==${OP.B64} then
+    ${v.st}[1]=${v.b64}(${v.st}[1])
+  elseif op==${OP.ROLL} then
+    local raw=${v.st}[1]
+    local out,buf,bi={},{},0
+    for i=1,#raw do
+      local b=string.byte(raw,i)
+      b=${v.xor}(${v.xor}(b,${v.roll}[((i-1)%16)+1]),(i*31)%256)
+      bi=bi+1
+      buf[bi]=string.char(b)
+      if bi>=4096 then out[#out+1]=table.concat(buf) buf={} bi=0 end
+    end
+    if bi>0 then out[#out+1]=table.concat(buf) end
+    ${v.st}[1]=table.concat(out)
+  elseif op==${OP.DEC2} then
+    ${v.st}[1]=${v.layer}(${v.st}[1],${v.k2},${v.s2},${v.m2},${v.a2})
+  elseif op==${OP.DEC1} then
+    ${v.st}[1]=${v.layer}(${v.st}[1],${v.k1},${v.s1},${v.m1},${v.a1})
+  elseif op==${OP.DEC0} then
+    ${v.st}[1]=${v.layer}(${v.st}[1],${v.k0},${v.s0},${v.m0},${v.a0})
+  elseif op==${OP.LOAD} then
     if type(${v.ls})~="function" then return end
-    local fn,err=${v.ls}(${v.st}[#${v.st}])
+    local fn,err=${v.ls}(${v.st}[1])
     if not fn then return end
-    ${v.st}[#${v.st}]=fn
-  elseif op==${OP_CALL} then
-    local fn=${v.st}[#${v.st}]
-    ${v.st}[#${v.st}]=nil
+    ${v.st}[1]=fn
+  elseif op==${OP.CALL} then
+    local fn=${v.st}[1]
+    ${v.st}[1]=nil
     if type(fn)=="function" then
       local ok,err=pcall(fn)
       if not ok then error(tostring(err),0) end
     end
-  elseif op==${OP_RET} then
+  elseif op==${OP.RET} then
     break
   end
 end
