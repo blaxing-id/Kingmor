@@ -599,8 +599,9 @@ function readScriptSource(script) {
   return null;
 }
 
-// ==================== LUA OBFUSCATOR (high-compat KM-OBF) ====================
-// Simple XOR + base64 + bootstrap. Tuned for executor compatibility (~max practical reliability).
+// ==================== LUA OBFUSCATOR (KM-VM v4 — Bloomix-leaning, runnable) ====================
+// Stronger commercial-style wrapper: env bootstrap, opaque checks, custom opcode VM,
+// dual-layer payload. Still NOT a Luraph/IronBrew clone (different layout for anti-073).
 function obfuscateLua(plainSource) {
   const src = String(plainSource || "");
   if (!src.trim()) return src;
@@ -608,45 +609,157 @@ function obfuscateLua(plainSource) {
   const rndU32 = () => crypto.randomBytes(4).readUInt32BE(0) >>> 0;
   const id = () => {
     const alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
-    let s = "_";
-    for (let i = 0; i < 10; i++) s += alphabet[rndU32() % alphabet.length];
+    let s = alphabet[rndU32() % alphabet.length];
+    const n = 5 + (rndU32() % 7);
+    for (let i = 1; i < n; i++) s += alphabet[rndU32() % alphabet.length];
     return s;
   };
 
-  const key = crypto.randomBytes(32);
-  const seed = rndU32();
+  // dual-layer encrypt
+  const key1 = crypto.randomBytes(32);
+  const key2 = crypto.randomBytes(32);
+  const seed1 = (rndU32() | 1) >>> 0;
+  const seed2 = (rndU32() | 1) >>> 0;
+  const mul1 = 1103515245, add1 = 12345;
+  const mul2 = 214013, add2 = 2531011;
 
-  function scramble(buf) {
+  function scrambleLayer(buf, key, seed, mul, add) {
     const out = Buffer.allocUnsafe(buf.length);
     let s = seed >>> 0;
     for (let i = 0; i < buf.length; i++) {
-      s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+      s = (Math.imul(s, mul) + add) >>> 0;
       const k = key[i & 31];
-      const drift = ((s & 255) ^ ((i * 131) & 255)) & 255;
-      out[i] = buf[i] ^ k ^ drift;
+      const drift = ((s >>> 8) ^ (i * 67 + 13)) & 255;
+      out[i] = buf[i] ^ k ^ drift ^ ((s >>> 16) & 255);
     }
     return out;
   }
 
-  const enc = scramble(Buffer.from(src, "utf8"));
-  const b64 = enc.toString("base64");
-  const pieceSize = 3500;
+  let buf = Buffer.from(src, "utf8");
+  buf = scrambleLayer(buf, key1, seed1, mul1, add1);
+  buf = scrambleLayer(buf, key2, seed2, mul2, add2);
+  const b64 = buf.toString("base64");
+
+  const pieceSize = 2200 + (rndU32() % 900);
   const pieces = [];
   for (let i = 0; i < b64.length; i += pieceSize) pieces.push(b64.slice(i, i + pieceSize));
 
-  const K = id(), S = id(), P = id(), bx = id(), b64d = id(), dec = id();
-  const load = id(), fn = id(), err = id(), ok = id(), re = id();
-  const keyLua = Array.from(key).join(",");
-  const partsLua = pieces.map((p, i) => `  [${i + 1}]=[=[${p}]=]`).join(",\n");
+  // randomized opcodes
+  const used = new Set();
+  const op = () => {
+    let n;
+    do { n = 11 + (rndU32() % 230); } while (used.has(n));
+    used.add(n);
+    return n;
+  };
+  const OP_NOP = op(), OP_LOADK = op(), OP_CONCAT = op(), OP_B64 = op();
+  const OP_DEC2 = op(), OP_DEC1 = op(), OP_LOAD = op(), OP_CALL = op();
+  const OP_RET = op(), OP_JMP = op(), OP_MOVE = op(), OP_BXOR = op();
+  const OP_CHECK = op(), OP_ENV = op();
 
-  // Minimal, portable Lua — no bit32 required, no table.create, chunked concat
-  return `-- Kingmor KM-OBF
-local ${K}={${keyLua}}
-local ${S}=${seed}
-local ${P}={
-${partsLua}
-}
-local function ${bx}(a,c)
+  const program = [];
+  program.push(OP_ENV);
+  program.push(OP_CHECK);
+  for (let i = 1; i <= pieces.length; i++) {
+    program.push(OP_LOADK, i);
+  }
+  program.push(OP_CONCAT, pieces.length);
+  program.push(OP_B64);
+  program.push(OP_DEC2);
+  program.push(OP_DEC1);
+  program.push(OP_LOAD);
+  program.push(OP_CALL);
+  program.push(OP_RET);
+  // junk tail (never reached after RET, confuses static readers)
+  program.push(OP_NOP, OP_JMP, 0, OP_BXOR, OP_MOVE);
+
+  // ids
+  const vR = id(), vPC = id(), vSt = id(), vK1 = id(), vK2 = id();
+  const vS1 = id(), vS2 = id(), vM1 = id(), vA1 = id(), vM2 = id(), vA2 = id();
+  const vChunks = id(), vCode = id(), vXor = id(), vB64 = id(), vLayer = id();
+  const vEnv = id(), vLS = id(), vFn = id(), vOk = id(), vRe = id();
+  const vType = id(), vPairs = id(), vChar = id(), vG = id(), vTmp = id();
+  const vHash = id(), vName = id(), vFind = id(), vMeta = id(), vN = id();
+
+  const key1Lua = Array.from(key1).join(",");
+  const key2Lua = Array.from(key2).join(",");
+  const chunksLua = pieces.map((p, i) => `[${i + 1}]=[=[${p}]=]`).join(",");
+  const codeLua = program.join(",");
+
+  // encode "loadstring" and "getfenv" as char math (Bloomix-style) — rebuilt at runtime
+  function charMath(str) {
+    // produce ((a)-(b)),((c)-(d)),... that equals each char code
+    const parts = [];
+    for (let i = 0; i < str.length; i++) {
+      const code = str.charCodeAt(i);
+      const a = 100 + (rndU32() % 120);
+      parts.push(`((${a + code})-(${a}))`);
+    }
+    return parts.join(",");
+  }
+  const loadstringMath = charMath("loadstring");
+  const getfenvMath = charMath("getfenv");
+
+  const junkA = rndU32();
+  const junkB = rndU32();
+  const junkC = (rndU32() % 9000) + 100;
+  const magic1 = (rndU32() % 2000000000) + 1;
+  const magic2 = (rndU32() % 2000000000) + 1;
+
+  return `-- This Obfuscate Generated By Kingmor https://discord.gg/KqXUFaqWX
+return(function(${vR},${vG},${vTmp},...)
+if not ${vR} then ${vR}=(function()
+local ${vType}=type
+local ${vPairs}=pairs
+local ${vChar}=string and string.char
+local ${vEnv}=((_ENV or _G) or {})
+local function ${vHash}(s)
+  if ${vType}(s)~="string" then return 0 end
+  local h=${magic1}
+  for i=1,#s do h=(h*131+string.byte(s,i))%2147483647 end
+  return h
+end
+local function ${vFind}(t,target)
+  if ${vType}(t)~="table" or not ${vPairs} then return nil end
+  for k,v in ${vPairs}(t) do
+    if ${vType}(k)=="string" and ${vHash}(k)==target then return v end
+  end
+  return nil
+end
+local n1=${vChar} and ${vChar}(${getfenvMath}) or nil
+local r=${vFind}(${vEnv},${magic2})
+if r~=nil then return r end
+if n1 and ${vEnv}[n1]~=nil then return ${vEnv}[n1] end
+r=${vFind}(_G,${magic2})
+if r~=nil then return r end
+if n1 and _G and _G[n1]~=nil then return _G[n1] end
+local mt=getmetatable and getmetatable(${vEnv}) or nil
+local idx=mt and mt.__index or nil
+r=${vFind}(idx,${magic2})
+if r~=nil then return r end
+if n1 and ${vType}(idx)=="table" and idx[n1]~=nil then return idx[n1] end
+return getfenv
+end)() end
+if not ${vG} then ${vG}=(function()
+local ${vType}=type
+local ${vChar}=string and string.char
+local n=${vChar} and ${vChar}(${loadstringMath}) or "loadstring"
+local e=(_ENV or _G) or {}
+if ${vType}(e[n])=="function" then return e[n] end
+if ${vType}(_G)=="table" and ${vType}(_G[n])=="function" then return _G[n] end
+return loadstring or load
+end)() end
+local ${vK1}={${key1Lua}}
+local ${vK2}={${key2Lua}}
+local ${vS1}=${seed1}
+local ${vS2}=${seed2}
+local ${vM1}=${mul1}
+local ${vA1}=${add1}
+local ${vM2}=${mul2}
+local ${vA2}=${add2}
+local ${vChunks}={${chunksLua}}
+local ${vCode}={${codeLua}}
+local function ${vXor}(a,c)
   a=a%256 c=c%256
   local r,p=0,1
   for _=1,8 do
@@ -656,7 +769,7 @@ local function ${bx}(a,c)
   end
   return r
 end
-local function ${b64d}(data)
+local function ${vB64}(data)
   local A="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
   local L={}
   for i=1,#A do L[string.sub(A,i,i)]=i-1 end
@@ -679,16 +792,15 @@ local function ${b64d}(data)
   end
   return table.concat(out)
 end
-local function ${dec}()
-  local raw=${b64d}(table.concat(${P}))
+local function ${vLayer}(raw,key,st,mul,add)
   local chunks,buf,bi={},{},0
-  local st=${S}
   for i=1,#raw do
-    st=(1664525*st+1013904223)%4294967296
-    local k=${K}[((i-1)%32)+1]
-    local drift=${bx}(st%256,((i-1)*131)%256)
+    st=(mul*st+add)%4294967296
+    local k=key[((i-1)%32)+1]
+    local drift=${vXor}(math.floor(st/256)%256,(i*67+13)%256)
+    local hi=${vXor}(math.floor(st/65536)%256,0)
     bi=bi+1
-    buf[bi]=string.char(${bx}(${bx}(string.byte(raw,i),k),drift))
+    buf[bi]=string.char(${vXor}(${vXor}(${vXor}(string.byte(raw,i),k),drift),hi))
     if bi>=4096 then
       chunks[#chunks+1]=table.concat(buf)
       buf={}
@@ -698,16 +810,65 @@ local function ${dec}()
   if bi>0 then chunks[#chunks+1]=table.concat(buf) end
   return table.concat(chunks)
 end
-local ${load}=loadstring or load
-if type(${load})~="function" then error("Kingmor: no loadstring",0) end
-local src=${dec}()
-local ${fn},${err}=${load}(src)
-if not ${fn} then error("Kingmor: compile failed",0) end
-local ${ok},${re}=pcall(${fn})
-if not ${ok} then error(tostring(${re}),0) end
+-- integrity-ish opaque (does not break run)
+local ${vOk}=(${junkA}%${junkC})+${junkB}
+if ${vOk}<0 then return end
+local ${vSt}={}
+local ${vPC}=1
+local ${vN}=#${vCode}
+local ${vLS}=${vG}
+while ${vPC}<=${vN} do
+  local op=${vCode}[${vPC}]
+  ${vPC}=${vPC}+1
+  if op==${OP_ENV} then
+    if type(${vLS})~="function" then
+      ${vLS}=loadstring or load
+    end
+  elseif op==${OP_CHECK} then
+    if type(${vChunks})~="table" or type(${vCode})~="table" then return end
+  elseif op==${OP_NOP} then
+    local _=${junkA}
+  elseif op==${OP_LOADK} then
+    local idx=${vCode}[${vPC}]
+    ${vPC}=${vPC}+1
+    ${vSt}[#${vSt}+1]=${vChunks}[idx]
+  elseif op==${OP_CONCAT} then
+    local n=${vCode}[${vPC}]
+    ${vPC}=${vPC}+1
+    local parts={}
+    for i=1,n do parts[i]=${vSt}[#${vSt}-n+i] end
+    for i=1,n do ${vSt}[#${vSt}]=nil end
+    ${vSt}[#${vSt}+1]=table.concat(parts)
+  elseif op==${OP_B64} then
+    ${vSt}[#${vSt}]=${vB64}(${vSt}[#${vSt}])
+  elseif op==${OP_DEC2} then
+    ${vSt}[#${vSt}]=${vLayer}(${vSt}[#${vSt}],${vK2},${vS2},${vM2},${vA2})
+  elseif op==${OP_DEC1} then
+    ${vSt}[#${vSt}]=${vLayer}(${vSt}[#${vSt}],${vK1},${vS1},${vM1},${vA1})
+  elseif op==${OP_LOAD} then
+    if type(${vLS})~="function" then return end
+    local fn=${vLS}(${vSt}[#${vSt}])
+    ${vSt}[#${vSt}]=fn
+  elseif op==${OP_CALL} then
+    local fn=${vSt}[#${vSt}]
+    ${vSt}[#${vSt}]=nil
+    if type(fn)=="function" then
+      local a,b=pcall(fn)
+      if not a then pcall(function() warn(tostring(b)) end) end
+    end
+  elseif op==${OP_RET} then
+    break
+  elseif op==${OP_JMP} then
+    local off=${vCode}[${vPC}] or 0
+    ${vPC}=${vPC}+1
+    ${vPC}=${vPC}+off
+  elseif op==${OP_MOVE} or op==${OP_BXOR} then
+    ${vPC}=${vPC}+0
+  end
+end
+end)()
 `;
 }
-
 
 // Ephemeral encrypted delivery for reliable large-script loading
 const DELIVER_DIR = path.join(DATA_DIR, "deliver");
