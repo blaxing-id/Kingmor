@@ -768,12 +768,45 @@ function buildSecureLoader(plain, userKey, freeModeFlag, base, scriptId, doObfus
   const keyLua = Array.from(key).join(",");
   const keyHex = key.toString("hex");
   const uk = String(userKey || "").toLowerCase().trim();
+  // If no key was passed in the URL, resolve script_key at runtime (getgenv / _G)
+  const useGlobalKey = !freeModeFlag && !uk;
+
+  const keyResolveLua = freeModeFlag
+    ? `local uk = ""`
+    : useGlobalKey
+      ? `local uk = nil
+pcall(function()
+  if type(getgenv) == "function" then
+    local g = getgenv()
+    if type(g) == "table" then uk = g.script_key or g.ScriptKey end
+  end
+end)
+if type(uk) ~= "string" or #uk < 4 then
+  pcall(function()
+    if type(getrenv) == "function" then
+      local r = getrenv()
+      if type(r) == "table" then uk = r.script_key or r.ScriptKey end
+    end
+  end)
+end
+if type(uk) ~= "string" or #uk < 4 then
+  pcall(function() uk = rawget(_G, "script_key") or rawget(_G, "ScriptKey") end)
+end
+if type(uk) ~= "string" or #uk < 4 then
+  pcall(function() uk = script_key end)
+end
+if type(uk) ~= "string" or #uk < 4 then
+  if lp then lp:Kick("[Kingmor] Set script_key = \"YOUR_KEY\" before running the loader") end
+  return
+end
+uk = string.lower((tostring(uk):gsub("^%s+", ""):gsub("%s+$", "")))`
+      : `local uk = ${JSON.stringify(uk)}`;
 
   const hwidBlock = freeModeFlag
     ? `pcall(function() httpget(${JSON.stringify(base + "/api/hwid/check?scriptId=" + scriptId + "&hwid=")} .. hwid) end)`
     : `do
   local ok,body = pcall(function()
-    return httpget(${JSON.stringify(base + "/api/hwid/check?scriptId=" + scriptId + "&key=" + uk + "&hwid=")} .. hwid)
+    return httpget(${JSON.stringify(base + "/api/hwid/check?scriptId=" + scriptId + "&key=")} .. uk .. ${JSON.stringify("&hwid=")} .. hwid)
   end)
   if not ok or type(body) ~= "string" or body == "" then
     if lp then lp:Kick("[Kingmor] HWID Check Failed") end
@@ -868,6 +901,7 @@ local Players=game:GetService("Players")
 local lp=Players.LocalPlayer
 local hwid=""
 pcall(function() hwid=tostring(game:GetService("RbxAnalyticsService"):GetClientId()) end)
+${keyResolveLua}
 ${httpgetFn}
 ${hwidBlock}
 local key={${keyLua}}
@@ -883,8 +917,9 @@ run(decrypt(enc))
 
   // LARGE: multi-part pack
   const parts = Math.max(1, Math.ceil(plainLen / CHUNK));
+  // Never embed user key in the static URL when resolving from global script_key
   const partBase = base + "/api/loader/" + scriptId + ".lua?pack=1&seed=" + seed + "&kh=" + keyHex + "&psz=" + CHUNK
-    + (freeModeFlag ? "" : "&key=" + encodeURIComponent(uk));
+    + (freeModeFlag || useGlobalKey ? "" : "&key=" + encodeURIComponent(uk));
 
   return `-- Kingmor secure loader v5-pack
 local HttpService=game:GetService("HttpService")
@@ -892,6 +927,7 @@ local Players=game:GetService("Players")
 local lp=Players.LocalPlayer
 local hwid=""
 pcall(function() hwid=tostring(game:GetService("RbxAnalyticsService"):GetClientId()) end)
+${keyResolveLua}
 ${httpgetFn}
 ${hwidBlock}
 local key={${keyLua}}
@@ -902,7 +938,7 @@ ${sharedDecode}
 local function nap(sec) pcall(function() if task and task.wait then task.wait(sec) else wait(sec) end end) end
 local pieces={}
 for i=1,parts do
-  local url=partBase..tostring(i)
+  local url=partBase..tostring(i)${freeModeFlag ? "" : ` .. "&key=" .. uk`}
   local body,lastErr=nil,nil
   for attempt=1,6 do
     local ok,res=pcall(httpget,url)
@@ -2333,76 +2369,19 @@ ${sourceCode}`;
     }
 
     // ----- Full loader bootstrap -----
-    // Public format (no ?key= in URL):
+    // Public format (no ?key= in the URL):
     //   script_key = "KEY"
     //   loadstring(game:HttpGet(".../api/loader/ID.lua"))()
-    // Stage-1 reads global script_key, then fetches the real payload with key internally.
-    if (!isFreeMode && !providedKey && !isPack) {
-      const stage1 = `-- Kingmor loader
-local HttpService = game:GetService("HttpService")
-local Players = game:GetService("Players")
-local lp = Players.LocalPlayer
-
-local function httpget(url)
-  local list = {}
-  local function add(f) if type(f) == "function" then list[#list + 1] = f end end
-  if type(request) == "function" then add(function(u) local r = request({ Url = u, Method = "GET", Headers = { ["User-Agent"] = "Kingmor/5" } }) if type(r) == "table" then return r.Body or r.body or r.Data or r.data end end) end
-  if type(http_request) == "function" then add(function(u) local r = http_request({ Url = u, Method = "GET" }) if type(r) == "table" then return r.Body or r.body end end) end
-  if type(syn) == "table" and type(syn.request) == "function" then add(function(u) local r = syn.request({ Url = u, Method = "GET" }) if type(r) == "table" then return r.Body or r.body end end) end
-  if type(http) == "table" and type(http.request) == "function" then add(function(u) local r = http.request({ Url = u, Method = "GET" }) if type(r) == "table" then return r.Body or r.body end end) end
-  if type(fluxus) == "table" and type(fluxus.request) == "function" then add(function(u) local r = fluxus.request({ Url = u, Method = "GET" }) if type(r) == "table" then return r.Body or r.body end end) end
-  add(function(u) if type(game.HttpGet) == "function" then return game:HttpGet(u) end end)
-  add(function(u) return HttpService:GetAsync(u, true) end)
-  local last = "no http"
-  for i = 1, #list do
-    local ok, res = pcall(list[i], url)
-    if ok and type(res) == "string" and #res > 0 then return res end
-    last = tostring(res)
-  end
-  error(last)
-end
-
-local key = rawget(_G, "script_key") or rawget(_G, "ScriptKey") or script_key
-if type(key) ~= "string" or #key < 4 then
-  if lp then lp:Kick("[Kingmor] Set script_key = \"YOUR_KEY\" before running the loader") end
-  return
-end
-key = string.lower(string.gsub(key, "^%s*(.-)%s*$", "%1"))
-
-local url = ${JSON.stringify(base + "/api/loader/" + scriptId + ".lua")} .. "?key=" .. key .. "&raw=1"
-local ok, body = pcall(httpget, url)
-if not ok or type(body) ~= "string" or #body < 8 then
-  if lp then lp:Kick("[Kingmor] Failed to download script") end
-  return
-end
-if string.sub(body, 1, 10) == "-- Kingmor" and string.find(body, "Kick", 1, true) and not string.find(body, "secure loader", 1, true) and not string.find(body, "KM-OBF", 1, true) then
-  local fn = (loadstring or load)(body)
-  if fn then pcall(fn) end
-  return
-end
-local loader = loadstring or load
-if type(loader) ~= "function" then
-  if lp then lp:Kick("[Kingmor] No loadstring") end
-  return
-end
-local fn, err = loader(body)
-if not fn then
-  warn("[Kingmor] compile:", err)
-  if lp then lp:Kick("[Kingmor] Script compile error") end
-  return
-end
-local okRun, runErr = pcall(fn)
-if not okRun then warn("[Kingmor] runtime:", runErr) end
-`;
-      return sendLua(stage1);
+    // Bootstrap resolves script_key from getgenv/_G at runtime and checks HWID.
+    if (!isFreeMode && providedKey) {
+      const auth = validateKey(providedKey);
+      if (!auth.ok) return sendLua(kickPlayer(auth.reason));
     }
-
-    const auth = validateKey(providedKey);
-    if (!auth.ok) return sendLua(kickPlayer(auth.reason));
 
     try {
       const doObf = script.obfuscated === true;
-      const boot = buildSecureLoader(plainSource, providedKey, isFreeMode, base, scriptId, doObf);
+      // Empty providedKey → loader reads global script_key (preferred public format)
+      const boot = buildSecureLoader(plainSource, providedKey || "", isFreeMode, base, scriptId, doObf);
       return sendLua(boot);
     } catch (e) {
       console.error("buildSecureLoader failed:", e);
