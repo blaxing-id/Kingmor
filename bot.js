@@ -95,7 +95,9 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const PREMIUM_INFO = {
   discord: "https://discord.gg/QgubzPzzy",
   priceIDR: "Rp 20.000",
-  priceUSD: "$2"
+  priceUSD: "$2",
+  ultraPriceIDR: "Rp 50.000",
+  ultraPriceUSD: "$5",
 };
 
 const internalHeaders = { "x-api-secret": CONFIG.apiSecret };
@@ -262,6 +264,13 @@ function isPremiumLocal(userId) {
   if (entry.expiry && new Date(entry.expiry) < new Date()) return false;
   return true;
 }
+function isUltraLocal(userId) {
+  const p = readPremium();
+  const entry = p[String(userId)];
+  if (!entry) return false;
+  if (entry.expiry && new Date(entry.expiry) < new Date()) return false;
+  return String(entry.plan || "").toLowerCase() === "ultra";
+}
 
 async function checkPremium(userId) {
   try {
@@ -273,6 +282,32 @@ async function checkPremium(userId) {
     return isPremiumLocal(userId);
   }
 }
+async function checkUltra(userId) {
+  try {
+    const res = await axios.get(`${CONFIG.apiBase}/api/premium/status`, {
+      headers: internalHeaders, params: { userId }, timeout: 8000
+    });
+    return res.data.ultra === true || res.data.plan === "ultra";
+  } catch {
+    return isUltraLocal(userId);
+  }
+}
+async function getPlanInfo(userId) {
+  try {
+    const res = await axios.get(`${CONFIG.apiBase}/api/premium/status`, {
+      headers: internalHeaders, params: { userId }, timeout: 8000
+    });
+    return {
+      premium: !!res.data.premium,
+      ultra: !!res.data.ultra || res.data.plan === "ultra",
+      plan: res.data.plan || (res.data.premium ? "premium" : "free"),
+    };
+  } catch {
+    const ultra = isUltraLocal(userId);
+    const premium = isPremiumLocal(userId);
+    return { premium, ultra, plan: ultra ? "ultra" : premium ? "premium" : "free" };
+  }
+}
 
 function premiumRequiredReply(commandName, extraNote) {
   const embed = new EmbedBuilder()
@@ -281,14 +316,15 @@ function premiumRequiredReply(commandName, extraNote) {
       `The command \`/${commandName}\` is only available for **Kingmor Premium** users.\n\n` +
       `**Why upgrade?**\n` +
       `• 📜 **10 scripts** (Free: 2)\n` +
-      `• 🎛️ \`/setuppanel\` — up to **10 panels** (Free: 2 max)\n` +
+      `• 🎛️ \`/setuppanel\` — up to **10 panels** (Free: 3 · Ultra: unlimited)\n` +
       `• 🎮 \`/freemode\` — enable free mode on your scripts\n` +
       `• 🚫 \`/blacklistrole\` — blacklist roles\n` +
       `• 🔓 \`/unblacklist role\` — unblacklist roles\n` +
       `• ⏱️ \`/cooldownhwid\` — custom HWID reset cooldown\n` +
       `• 🔄 \`/resethwiduser\` — reset HWID for any user\n\n` +
       `**Price:**\n` +
-      `🇮🇩 ${PREMIUM_INFO.priceIDR} • 🌍 ${PREMIUM_INFO.priceUSD}\n\n` +
+      `🇮🇩 Premium ${PREMIUM_INFO.priceIDR} / Ultra ${PREMIUM_INFO.ultraPriceIDR}\n` +
+      `🌍 Premium ${PREMIUM_INFO.priceUSD} / Ultra ${PREMIUM_INFO.ultraPriceUSD}\n\n` +
       `**How to buy:**\n` +
       `1. Join our Discord server\n` +
       `2. Open a **ticket** in the ticket channel\n` +
@@ -589,10 +625,19 @@ const createExtras = function createExtras(ctx) {
   const commands = [
     new SlashCommandBuilder()
       .setName("keypremium")
-      .setDescription("[OWNER ONLY] Create Premium key(s) that users redeem on the website")
+      .setDescription("[ADMIN ONLY] Create Premium or Ultra Premium key(s)")
+      .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+      .addStringOption(o =>
+        o.setName("plan")
+          .setDescription("Which plan key to create")
+          .setRequired(true)
+          .addChoices(
+            { name: "Premium (Rp 20k / $2)", value: "premium" },
+            { name: "Ultra Premium (Rp 50k / $5) — unlimited", value: "ultra" },
+          ))
       .addStringOption(o =>
         o.setName("duration")
-          .setDescription("Premium duration, e.g. 7d, 30d, 12h, 1y, lifetime")
+          .setDescription("Duration, e.g. 7d, 30d, 12h, 1y, lifetime")
           .setRequired(true))
       .addIntegerOption(o =>
         o.setName("amount")
@@ -733,12 +778,14 @@ const createExtras = function createExtras(ctx) {
     try {
       // ---------- /keypremium ----------
       if (interaction.isChatInputCommand() && interaction.commandName === "keypremium") {
-        if (interaction.user.id !== OWNER_ID) {
-          await interaction.reply({ content: "❌ This command is restricted to the bot owner only.", ephemeral: true }).catch(() => {});
+        // Only the admin user id from server.js (OWNER_ID)
+        if (String(interaction.user.id) !== String(OWNER_ID)) {
+          await interaction.reply({ content: "❌ This command is restricted to the Kingmor admin only.", ephemeral: true }).catch(() => {});
           return true;
         }
         await interaction.deferReply({ ephemeral: true }).catch(() => {});
 
+        const plan = String(interaction.options.getString("plan") || "premium").toLowerCase() === "ultra" ? "ultra" : "premium";
         const parsed = parsePremiumDuration(interaction.options.getString("duration"));
         if (!parsed) {
           await interaction.editReply({
@@ -751,7 +798,7 @@ const createExtras = function createExtras(ctx) {
         let data;
         try {
           const res = await axios.post(`${CONFIG.apiBase}/api/premiumkey/create`,
-            { durationMs: parsed.ms, amount, createdBy: interaction.user.id },
+            { durationMs: parsed.ms, amount, createdBy: interaction.user.id, plan },
             { headers: internalHeaders, timeout: 8000 });
           data = res.data;
         } catch (err) {
@@ -760,16 +807,18 @@ const createExtras = function createExtras(ctx) {
           return true;
         }
 
+        const planTitle = plan === "ultra" ? "⚡ Ultra Premium" : "👑 Premium";
         const embed = new EmbedBuilder()
-          .setTitle("👑 Premium Key(s) Created")
-          .setColor(0xFFD700)
-          .setDescription(data.keys.map(k => `\`${k}\``).join("\n"))
+          .setTitle(`${planTitle} Key(s) Created`)
+          .setColor(plan === "ultra" ? 0xA855F7 : 0xFFD700)
+          .setDescription(data.keys.map(k => "`" + k + "`").join("\n"))
           .addFields(
+            { name: "📦 Plan", value: plan === "ultra" ? "Ultra Premium (unlimited)" : "Premium", inline: true },
             { name: "⏱️ Duration", value: parsed.label, inline: true },
             { name: "🔑 Amount", value: String(data.keys.length), inline: true },
             { name: "🌐 Redeem at", value: `${CONFIG.apiBase}/redeem`, inline: false }
           )
-          .setFooter({ text: "Each key can be redeemed once • Kingmor 👑" })
+          .setFooter({ text: "Each key can be redeemed once • Kingmor" })
           .setTimestamp();
 
         await interaction.editReply({ embeds: [embed] }).catch(() => {});
@@ -913,7 +962,7 @@ const extras = createExtras({
 const commands = [
   new SlashCommandBuilder()
     .setName("setuppanel")
-    .setDescription("Setup panel embed with script selection (Free: 2 max, Premium: 10 max)")
+    .setDescription("Setup panel embed with script selection (Free: 3 · Premium: 10 · Ultra: unlimited)")
     .addStringOption(o => o.setName("title").setDescription("Title").setRequired(true))
     .addStringOption(o => o.setName("description").setDescription("Description").setRequired(true)),
 
@@ -1895,7 +1944,7 @@ async function handleInteraction(interaction) {
             `**Free plan:** 2 scripts, 2 panels, lifetime whitelist, key system & HWID lock.\n\n` +
             `**Unlock Premium features:**\n` +
             `• 📜 **10 scripts** (Free: 2)\n` +
-            `• 🎛️ \`/setuppanel\` — up to **10 panels** (Free: 2 max)\n` +
+            `• 🎛️ \`/setuppanel\` — up to **10 panels** (Free: 3 · Ultra: unlimited)\n` +
             `• 🎮 \`/freemode\` — Enable free mode on your scripts\n` +
             `• 🚫 \`/blacklistrole\` — Blacklist roles from using your scripts\n` +
             `• 🔓 \`/unblacklist role\` — Unblacklist roles\n` +
@@ -2043,12 +2092,14 @@ async function handleInteraction(interaction) {
             content:
               `❌ **Panel limit reached!**\n\n` +
               `You currently have **${limitInfo.count}/${limitInfo.max}** panels.\n` +
-              `Your tier: **${limitInfo.premium ? "👑 Premium" : "🆓 Free"}**\n\n` +
-              (limitInfo.premium
-                ? `Premium users can create up to **10 panels**. Re-run \`/setuppanel\` in a server that already has your panel to replace it, or clear an old panel.`
-                : `Free users can only create up to **2 panels**.\nUpgrade to Premium to increase the limit to **10 panels**.`),
+              `Your tier: **${limitInfo.ultra ? "⚡ Ultra" : limitInfo.premium ? "👑 Premium" : "🆓 Free"}**\n\n` +
+              (limitInfo.ultra
+                ? `Ultra is unlimited. Try replacing an existing panel for this script.`
+                : limitInfo.premium
+                  ? `Premium users can create up to **${limitInfo.max} panels**. Re-run \`/setuppanel\` for a script that already has a panel to replace it.`
+                  : `Free users can create up to **${limitInfo.max} panels**.\nUpgrade to Premium (10) or Ultra (unlimited).`),
             components: limitInfo.premium ? [] : [new ActionRowBuilder().addComponents(
-              new ButtonBuilder().setLabel("💎 Buy Premium").setStyle(ButtonStyle.Link).setURL(PREMIUM_INFO.discord)
+              new ButtonBuilder().setLabel("💎 Buy Premium / Ultra").setStyle(ButtonStyle.Link).setURL(PREMIUM_INFO.discord)
             )]
           }).catch(() => {});
         }
