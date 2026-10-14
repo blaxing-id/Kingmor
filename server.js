@@ -81,10 +81,16 @@ function getBotServerCount(botId) {
 }
 const PREMIUM_PRICE_IDR = "Rp 20.000";
 const PREMIUM_PRICE_USD = "$2";
-const SCRIPT_LIMIT = { free: 2, premium: 10 };
+const ULTRA_PRICE_IDR = "Rp 50.000";
+const ULTRA_PRICE_USD = "$5";
+/** Script upload limits. Ultra = effectively unlimited */
+const SCRIPT_LIMIT = { free: 3, premium: 10, ultra: 999999 };
+/** Panel limits (Discord /setuppanel) */
+const PANEL_LIMIT = { free: 3, premium: 10, ultra: 999999 };
+/** Standalone OBF tool limits */
+const OBF_LIMIT = { free: 5, premium: 15, ultra: 999999 };
 /** Max Lua source size in characters (~25MB). Keep under typical proxy/body limits. */
 const MAX_SOURCE_CHARS = 25 * 1024 * 1024;
-const OBF_LIMIT = { free: 5, premium: 15 };
 const OBF_USAGE_FILE = path.join(DATA_DIR, "obf_usage.json");
 const BLACKLIST_FILE = path.join(DATA_DIR, "blacklist.json");
 
@@ -302,20 +308,51 @@ function writePremiumKeys(data) { return writeJSON(PREMIUM_KEYS_FILE, data); }
 function readCooldowns() { return readJSON(HWID_COOLDOWN_FILE, {}); }
 function writeCooldowns(data) { return writeJSON(HWID_COOLDOWN_FILE, data); }
 
-function isPremium(userId) {
+function getPlanEntry(userId) {
   const p = readPremium();
   const entry = p[String(userId)];
-  if (!entry) return false;
-  if (entry.expiry && new Date(entry.expiry) < new Date()) return false;
-  return true;
+  if (!entry) return null;
+  if (entry.expiry && new Date(entry.expiry) < new Date()) return null;
+  return entry;
+}
+/** Active paid plan: "premium" | "ultra" | null */
+function getUserPlan(userId) {
+  const entry = getPlanEntry(userId);
+  if (!entry) return null;
+  const plan = String(entry.plan || "premium").toLowerCase();
+  return plan === "ultra" ? "ultra" : "premium";
+}
+function isPremium(userId) {
+  return getUserPlan(userId) != null;
+}
+function isUltra(userId) {
+  return getUserPlan(userId) === "ultra";
 }
 function scriptLimitFor(userId) {
-  return isPremium(userId) ? SCRIPT_LIMIT.premium : SCRIPT_LIMIT.free;
+  const plan = getUserPlan(userId);
+  if (plan === "ultra") return SCRIPT_LIMIT.ultra;
+  if (plan === "premium") return SCRIPT_LIMIT.premium;
+  return SCRIPT_LIMIT.free;
+}
+function panelLimitFor(userId) {
+  const plan = getUserPlan(userId);
+  if (plan === "ultra") return PANEL_LIMIT.ultra;
+  if (plan === "premium") return PANEL_LIMIT.premium;
+  return PANEL_LIMIT.free;
 }
 function readObfUsage() { return readJSON(OBF_USAGE_FILE, {}); }
 function writeObfUsage(data) { return writeJSON(OBF_USAGE_FILE, data); }
 function obfLimitFor(userId) {
-  return isPremium(userId) ? OBF_LIMIT.premium : OBF_LIMIT.free;
+  const plan = getUserPlan(userId);
+  if (plan === "ultra") return OBF_LIMIT.ultra;
+  if (plan === "premium") return OBF_LIMIT.premium;
+  return OBF_LIMIT.free;
+}
+function planLabel(userId) {
+  const plan = getUserPlan(userId);
+  if (plan === "ultra") return "Ultra Premium";
+  if (plan === "premium") return "Premium";
+  return "Free";
 }
 function getObfUsed(userId) {
   const u = readObfUsage()[String(userId)];
@@ -1203,45 +1240,55 @@ ${bare ? "" : `<footer class="foot"><div class="wrap foot-in">
 }
 
 function planCards(currentUser) {
-  const prem = currentUser ? isPremium(currentUser.id) : false;
+  const plan = currentUser ? getUserPlan(currentUser.id) : null;
   const freeBtn = currentUser
     ? `<a class="btn btn-ghost btn-block" href="/dashboard">Open dashboard</a>`
     : `<a class="btn btn-ghost btn-block" href="/login">Start free</a>`;
-  const premBtn = prem
-    ? `<a class="btn btn-gold btn-block" href="/redeem">Extend with a key</a>`
-    : `<a class="btn btn-gold btn-block" href="/redeem">Redeem a Premium key</a>`;
+  const premBtn = plan
+    ? `<a class="btn btn-gold btn-block" href="/redeem">Extend / upgrade key</a>`
+    : `<a class="btn btn-gold btn-block" href="/redeem">Redeem a key</a>`;
   return `
-<div class="plans">
+<div class="plans" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
   <div class="plan">
     <h3>Free</h3>
     <div class="price">$0 <small>forever</small></div>
-    <div class="note">Everything you need to protect your first scripts.</div>
+    <div class="note">Protect your first scripts at no cost.</div>
     <ul>
       <li><b>${SCRIPT_LIMIT.free} scripts</b></li>
-      <li><b>Lifetime whitelist</b> — no expiry limit</li>
-      <li>Key system &amp; HWID lock</li>
-      <li><code>/setuppanel</code> up to 2 panels</li>
+      <li><b>${PANEL_LIMIT.free} panels</b> (<code>/setuppanel</code>)</li>
+      <li><b>${OBF_LIMIT.free} OBF scripts</b> (standalone tool)</li>
+      <li>Lifetime whitelist · key system · HWID lock</li>
       <li><code>/genkey</code>, <code>/whitelist</code>, <code>/blacklist</code>, <code>/setwebhook</code></li>
       <li>Self HWID reset (1 day cooldown)</li>
-      <li class="no"><code>/freemode</code></li>
-      <li class="no"><code>/blacklistrole</code> &amp; <code>/unblacklist role</code></li>
-      <li class="no"><code>/cooldownhwid</code> &amp; <code>/resethwiduser</code></li>
+      <li class="no">Premium-only Discord commands</li>
     </ul>
     ${freeBtn}
   </div>
   <div class="plan prem">
     <h3>Premium <span class="badge prem">👑</span></h3>
     <div class="price">${PREMIUM_PRICE_IDR} <small>/ ${PREMIUM_PRICE_USD}</small></div>
-    <div class="note">Key duration depends on the key you buy (up to lifetime).</div>
+    <div class="note">More slots and full seller tools.</div>
     <ul>
       <li><b>Everything in Free</b></li>
       <li><b>${SCRIPT_LIMIT.premium} scripts</b></li>
-      <li><code>/setuppanel</code> up to 10 panels</li>
-      <li><code>/freemode</code> — let anyone run a script without a key</li>
-      <li><code>/blacklistrole</code> &amp; <code>/unblacklist role</code></li>
-      <li><code>/cooldownhwid</code> — custom HWID reset cooldown</li>
-      <li><code>/resethwiduser</code> — reset HWID for any user</li>
+      <li><b>${PANEL_LIMIT.premium} panels</b></li>
+      <li><b>${OBF_LIMIT.premium} OBF scripts</b></li>
+      <li><code>/freemode</code>, <code>/blacklistrole</code>, <code>/cooldownhwid</code>, <code>/resethwiduser</code></li>
       <li>Priority support on Discord</li>
+    </ul>
+    ${premBtn}
+  </div>
+  <div class="plan prem" style="border-color:rgba(168,85,247,.55);box-shadow:0 0 0 1px rgba(168,85,247,.25)">
+    <h3>Ultra Premium <span class="badge prem" style="background:linear-gradient(135deg,#c084fc,#7c3aed)">⚡</span></h3>
+    <div class="price">${ULTRA_PRICE_IDR} <small>/ ${ULTRA_PRICE_USD}</small></div>
+    <div class="note">Unlimited everything — scripts, panels, OBF.</div>
+    <ul>
+      <li><b>Everything in Premium</b></li>
+      <li><b>Unlimited scripts</b></li>
+      <li><b>Unlimited panels</b></li>
+      <li><b>Unlimited OBF scripts</b></li>
+      <li>All Discord commands unlocked</li>
+      <li>Best for large hubs / multi-game sellers</li>
     </ul>
     ${premBtn}
   </div>
@@ -1569,13 +1616,15 @@ app.post("/api/scripts", requireAuth, async (req, res) => {
   const db = readDB();
   const owned = db.filter((s) => String(s.ownerId) === userId).length;
   const premium = isPremium(userId);
-  const limit = premium ? SCRIPT_LIMIT.premium : SCRIPT_LIMIT.free;
+  const limit = scriptLimitFor(userId);
   if (owned >= limit) {
     return res.status(403).json({
-      error: premium
-        ? `Script limit reached (${owned}/${limit}). Delete a script to upload a new one.`
-        : `Free plan allows ${limit} scripts (${owned}/${limit}). Redeem a Premium key to get ${SCRIPT_LIMIT.premium}.`,
-      limitReached: true, count: owned, limit, premium,
+      error: isUltra(userId)
+        ? `Script limit reached (${owned}/${limit}).`
+        : premium
+          ? `Premium allows ${limit} scripts (${owned}/${limit}). Upgrade to Ultra for unlimited.`
+          : `Free plan allows ${limit} scripts (${owned}/${limit}). Redeem Premium (${SCRIPT_LIMIT.premium}) or Ultra (unlimited).`,
+      limitReached: true, count: owned, limit, premium, plan: getUserPlan(userId) || "free",
     });
   }
 
@@ -1710,7 +1759,8 @@ app.get("/api/panels/count", requireInternalSecret, (req, res) => {
     }
   }
   const premium = isPremium(ownerId);
-  const max = premium ? 10 : 2;
+  const ultra = isUltra(ownerId);
+  const max = panelLimitFor(ownerId);
   // Optional: guildId + scriptId — replacing panel for the SAME script is free
   const guildId = req.query.guildId ? String(req.query.guildId) : null;
   const scriptId = req.query.scriptId ? String(req.query.scriptId) : null;
@@ -1724,8 +1774,8 @@ app.get("/api/panels/count", requireInternalSecret, (req, res) => {
     }
   }
   res.json({
-    count, max, premium, replacing,
-    remaining: Math.max(0, max - count),
+    count, max, premium, ultra, plan: getUserPlan(ownerId) || "free", replacing,
+    remaining: max >= 999999 ? 999999 : Math.max(0, max - count),
     canCreate: replacing || count < max,
   });
 });
@@ -1736,10 +1786,13 @@ app.get("/api/premium/status", requireInternalSecret, (req, res) => {
   const userId = req.query.userId;
   if (!userId) return res.status(400).json({ error: "userId required" });
   const premium = isPremium(userId);
+  const ultra = isUltra(userId);
   const p = readPremium();
   const entry = p[String(userId)] || null;
   res.json({
     premium,
+    ultra,
+    plan: getUserPlan(userId) || "free",
     expiry: entry?.expiry || null,
     since: entry?.since || null,
   });
@@ -1754,25 +1807,35 @@ app.post("/api/premium/set", requireInternalSecret, (req, res) => {
     writePremium(p);
     return res.json({ success: true, removed: true });
   }
+  const plan = String(req.body.plan || "premium").toLowerCase() === "ultra" ? "ultra" : "premium";
   p[String(userId)] = {
+    plan,
     expiry: expiry || null,
     since: p[String(userId)]?.since || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
   writePremium(p);
-  res.json({ success: true, premium: true, expiry });
+  res.json({ success: true, premium: true, ultra: plan === "ultra", plan, expiry });
 });
 
 app.get("/api/premium/info", (req, res) => {
   res.json({
     priceIDR: PREMIUM_PRICE_IDR,
     priceUSD: PREMIUM_PRICE_USD,
+    ultraPriceIDR: ULTRA_PRICE_IDR,
+    ultraPriceUSD: ULTRA_PRICE_USD,
     discord: DISCORD_INVITE,
+    limits: {
+      free: { scripts: SCRIPT_LIMIT.free, panels: PANEL_LIMIT.free, obf: OBF_LIMIT.free },
+      premium: { scripts: SCRIPT_LIMIT.premium, panels: PANEL_LIMIT.premium, obf: OBF_LIMIT.premium },
+      ultra: { scripts: "unlimited", panels: "unlimited", obf: "unlimited" },
+    },
   });
 });
 
 app.post("/api/premiumkey/create", requireInternalSecret, (req, res) => {
   const { durationMs, amount, createdBy } = req.body;
+  const plan = String(req.body.plan || "premium").toLowerCase() === "ultra" ? "ultra" : "premium";
   const isLifetime = durationMs === null || durationMs === undefined;
   if (!isLifetime && (typeof durationMs !== "number" || durationMs < 60 * 1000)) {
     return res.status(400).json({ error: "durationMs must be null (lifetime) or a number >= 60000" });
@@ -1785,6 +1848,7 @@ app.post("/api/premiumkey/create", requireInternalSecret, (req, res) => {
     do { key = generatePremiumKey(); } while (all.some((k) => k.key === key));
     all.push({
       key,
+      plan,
       durationMs: isLifetime ? null : durationMs,
       createdBy: createdBy ? String(createdBy) : null,
       createdAt: new Date().toISOString(),
@@ -1794,7 +1858,13 @@ app.post("/api/premiumkey/create", requireInternalSecret, (req, res) => {
     created.push(key);
   }
   writePremiumKeys(all);
-  res.json({ success: true, keys: created, lifetime: isLifetime, durationMs: isLifetime ? null : durationMs });
+  res.json({
+    success: true,
+    keys: created,
+    plan,
+    lifetime: isLifetime,
+    durationMs: isLifetime ? null : durationMs,
+  });
 });
 
 const redeemAttempts = new Map();
@@ -1839,7 +1909,15 @@ app.post("/api/premium/redeem", requireAuth, (req, res) => {
     newExpiry = new Date(base + entry.durationMs).toISOString();
   }
 
+  const plan = String(entry.plan || "premium").toLowerCase() === "ultra" ? "ultra" : "premium";
+  // Upgrading to ultra always wins; same plan extends expiry as before
+  const prevPlan = existing && (!existing.expiry || new Date(existing.expiry) > new Date())
+    ? String(existing.plan || "premium").toLowerCase()
+    : null;
+  const finalPlan = (prevPlan === "ultra" || plan === "ultra") ? "ultra" : plan;
+
   p[userId] = {
+    plan: finalPlan,
     expiry: newExpiry,
     since: existing?.since || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -1852,8 +1930,14 @@ app.post("/api/premium/redeem", requireAuth, (req, res) => {
   entry.redeemedAt = new Date().toISOString();
   writePremiumKeys(keys);
 
-  console.log(`👑 Premium key redeemed by ${userId} (${user.username}) → expiry: ${newExpiry || "lifetime"}`);
-  res.json({ success: true, expiry: newExpiry, lifetime: newExpiry === null });
+  console.log(`👑 ${finalPlan} key redeemed by ${userId} (${user.username}) → expiry: ${newExpiry || "lifetime"}`);
+  res.json({
+    success: true,
+    plan: finalPlan,
+    ultra: finalPlan === "ultra",
+    expiry: newExpiry,
+    lifetime: newExpiry === null,
+  });
 });
 
 // ==================== HWID COOLDOWN API ====================
@@ -2560,7 +2644,7 @@ app.get("/pricing", (req, res) => {
       <h3>How to get Premium</h3>
       <ol>
         <li>Join the <b>Kingmor Discord</b> server.</li>
-        <li>Open a <b>ticket</b> and tell staff you want Premium (${PREMIUM_PRICE_IDR} in Indonesia, ${PREMIUM_PRICE_USD} international).</li>
+        <li>Open a <b>ticket</b> and tell staff you want <b>Premium</b> (${PREMIUM_PRICE_IDR} / ${PREMIUM_PRICE_USD}) or <b>Ultra Premium</b> (${ULTRA_PRICE_IDR} / ${ULTRA_PRICE_USD}).</li>
         <li>Pay with the method staff gives you (QRIS, PayPal, etc.).</li>
         <li>Staff sends you a <b>Premium key</b>.</li>
         <li>Log in here and enter it on the <a href="/redeem" style="color:var(--gold)">Redeem</a> page. Premium turns on instantly.</li>
@@ -2619,7 +2703,8 @@ async function redeem(){
     var r=await fetch('/api/premium/redeem',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:key})});
     var d=await r.json();
     if(!r.ok){toast(d.error||'Redeem failed','err');b.disabled=false;b.textContent='Redeem key';return;}
-    toast(d.lifetime?'Premium activated: lifetime':'Premium activated until '+d.expiry.slice(0,10),'ok');
+    var planName=d.plan==='ultra'?'Ultra Premium':'Premium';
+    toast(d.lifetime?(planName+' activated: lifetime'):(planName+' activated until '+d.expiry.slice(0,10)),'ok');
     setTimeout(function(){location.href='/dashboard';},1400);
   }catch(e){toast('Server error','err');b.disabled=false;b.textContent='Redeem key';}
 }`;
@@ -2633,9 +2718,12 @@ async function redeem(){
 app.get("/obf", requireAuth, (req, res) => {
   const userId = String(req.session.user.id);
   const premium = isPremium(userId);
+  const ultra = isUltra(userId);
   const limit = obfLimitFor(userId);
   const used = getObfUsed(userId);
-  const left = Math.max(0, limit - used);
+  const left = ultra ? 999999 : Math.max(0, limit - used);
+  const limitLabel = ultra ? "∞" : String(limit);
+  const leftLabel = ultra ? "∞" : String(left);
 
   res.send(page({
     req,
@@ -2650,13 +2738,13 @@ app.get("/obf", requireAuth, (req, res) => {
   </p>
 
   <div class="stats" style="margin-bottom:24px">
-    <div class="stat"><b>${used}/${limit}</b><span>OBF used</span></div>
-    <div class="stat"><b>${left}</b><span>Remaining</span></div>
-    <div class="stat"><b>${premium ? "Premium" : "Free"}</b><span>Plan (Free ${OBF_LIMIT.free} · Premium ${OBF_LIMIT.premium})</span></div>
+    <div class="stat"><b>${used}/${limitLabel}</b><span>OBF used</span></div>
+    <div class="stat"><b>${leftLabel}</b><span>Remaining</span></div>
+    <div class="stat"><b>${ultra ? "Ultra" : premium ? "Premium" : "Free"}</b><span>Free ${OBF_LIMIT.free} · Premium ${OBF_LIMIT.premium} · Ultra ∞</span></div>
   </div>
 
-  ${left <= 0 ? `<div class="alert" style="margin-bottom:16px;padding:14px 16px;border:1px solid rgba(255,107,94,.4);border-radius:12px;background:rgba(255,107,94,.08)">
-    <b>Quota reached.</b> Free: ${OBF_LIMIT.free} OBF · Premium: ${OBF_LIMIT.premium} OBF.
+  ${!ultra && left <= 0 ? `<div class="alert" style="margin-bottom:16px;padding:14px 16px;border:1px solid rgba(255,107,94,.4);border-radius:12px;background:rgba(255,107,94,.08)">
+    <b>Quota reached.</b> Free: ${OBF_LIMIT.free} · Premium: ${OBF_LIMIT.premium} · Ultra: unlimited.
     ${!premium ? '<a class="btn btn-gold btn-sm" href="/redeem" style="margin-left:10px">Redeem Premium</a>' : ""}
   </div>` : ""}
 
@@ -2733,8 +2821,10 @@ app.post("/api/obf", requireAuth, (req, res) => {
   const used = getObfUsed(userId);
   if (used >= limit) {
     return res.status(403).json({
-      error: `OBF quota reached (${used}/${limit}). ${isPremium(userId) ? "Premium limit is 15." : "Free limit is 5. Redeem Premium for 15."}`,
-      used, limit, premium: isPremium(userId),
+      error: isUltra(userId)
+        ? `OBF quota error`
+        : `OBF quota reached (${used}/${limit}). Free ${OBF_LIMIT.free} · Premium ${OBF_LIMIT.premium} · Ultra unlimited.`,
+      used, limit, premium: isPremium(userId), plan: getUserPlan(userId) || "free",
     });
   }
 
@@ -2774,7 +2864,10 @@ app.get("/dashboard", requireAuth, (req, res) => {
   const limit = scriptLimitFor(userId);
   const reached = scripts.length >= limit;
   const pct = Math.min(100, Math.round((scripts.length / limit) * 100));
-  const planText = premium ? (pdata && pdata.expiry ? `Premium · until ${fmtDate(pdata.expiry)}` : "Premium · lifetime") : "Free plan";
+  const planName = planLabel(userId);
+  const planText = premium
+    ? (pdata && pdata.expiry ? `${planName} · until ${fmtDate(pdata.expiry)}` : `${planName} · lifetime`)
+    : "Free plan";
 
   const cards = scripts.map((s) => {
     const loaderUrl = `${base}/api/loader/${s.id}.lua`;
@@ -2972,281 +3065,4 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape'&&$('editModa
 });
 
 // ==================== ADMIN: PLAYER SOURCE ====================
-app.get("/admin", isAdmin, (req, res) => {
-  res.redirect("/admin/sources");
-});
-
-app.get("/admin/sources", isAdmin, (req, res) => {
-  const db = readDB();
-  const keys = readKeys();
-  const base = getBaseUrl(req);
-
-  const grouped = {};
-  for (const s of db) {
-    if (!grouped[s.ownerId]) {
-      grouped[s.ownerId] = {
-        ownerId: s.ownerId,
-        ownerUsername: s.ownerUsername || "Unknown",
-        scripts: [],
-      };
-    }
-    grouped[s.ownerId].scripts.push(s);
-  }
-
-  const users = Object.values(grouped).sort((a, b) =>
-    (a.ownerUsername || "").localeCompare(b.ownerUsername || "")
-  );
-
-  const totalScripts = db.length;
-  const totalUsers = users.length;
-  const totalKeys = keys.length;
-  const enabledCount = db.filter(s => s.enabled).length;
-
-  const userCards = users.map(u => {
-    const scriptCards = u.scripts.map(s => {
-      const sourceForSize = readScriptSource(s);
-      const size = sourceForSize ? Buffer.byteLength(sourceForSize, "utf8") : 0;
-      const sizeStr = size > 1024 * 1024
-        ? (size / 1024 / 1024).toFixed(2) + " MB"
-        : size > 1024 ? (size / 1024).toFixed(1) + " KB" : size + " B";
-      const scriptKeys = keys.filter(k => k.scriptId === s.id);
-      const usedKeys = scriptKeys.filter(k => k.userId).length;
-      const upd = s.updatedAt ? fmtDate(s.updatedAt) : (s.createdAt ? fmtDate(s.createdAt) : "-");
-      return `
-        <div class="src-script" data-script-id="${s.id}">
-          <div class="src-head">
-            <div>
-              <div class="src-title">
-                <span class="sc-st ${s.enabled ? "on" : "off"}">${s.enabled ? "● ON" : "● OFF"}</span>
-                ${escapeHtml(s.name)}
-              </div>
-              <div class="src-meta">
-                <span title="Script ID">🆔 ${escapeHtml(s.id)}</span>
-                <span>📦 ${sizeStr}</span>
-                <span>🔑 ${usedKeys}/${scriptKeys.length} keys used</span>
-                <span>📅 ${escapeHtml(upd)}</span>
-              </div>
-            </div>
-            <div class="src-act">
-              <button class="btn btn-ghost btn-sm" onclick="viewSource('${s.id}', this)">View Source</button>
-              <a class="btn btn-ghost btn-sm" href="/api/scripts/${s.id}/source/admin/download" download>Download</a>
-              <button class="btn btn-ghost btn-sm" onclick="copyLoader('${escapeHtml(base)}/api/loader/${s.id}.lua')">Loader</button>
-            </div>
-          </div>
-          <pre id="src-${s.id}" class="code src-pre" style="display:none"></pre>
-        </div>
-      `;
-    }).join("");
-
-    return `
-      <div class="src-user">
-        <div class="src-user-head">
-          <div class="src-user-avatar">👤</div>
-          <div>
-            <div class="src-user-name">${escapeHtml(u.ownerUsername)}</div>
-            <div class="src-user-id">ID: ${escapeHtml(u.ownerId)} • ${u.scripts.length} script(s)</div>
-          </div>
-          <div class="src-user-badges">
-            ${isPremium(u.ownerId) ? '<span class="badge prem">👑 Premium</span>' : '<span class="badge free">Free</span>'}
-          </div>
-        </div>
-        <div class="src-user-body">${scriptCards}</div>
-      </div>
-    `;
-  }).join("");
-
-  const body = `
-<main class="wrap" style="padding-bottom:60px">
-  <div class="page-head">
-    <h1>🕵️ Player Source</h1>
-    <p>View and download original Lua sources uploaded by every user. Admin only.</p>
-  </div>
-
-  <div class="stats" style="margin-top:0">
-    <div class="stat"><b>${totalUsers}</b><span>Total users</span></div>
-    <div class="stat"><b>${totalScripts}</b><span>Total scripts</span></div>
-    <div class="stat"><b>${enabledCount}</b><span>Enabled scripts</span></div>
-    <div class="stat"><b>${totalKeys}</b><span>Total keys</span></div>
-  </div>
-
-  <div class="h-row">
-    <h2>Search</h2>
-    <div class="ln"></div>
-  </div>
-  <input id="srcSearch" placeholder="Search by username or script name..." style="margin-bottom:20px">
-
-  <div class="h-row">
-    <h2>All players</h2>
-    <div class="ln"></div>
-  </div>
-
-  <div id="srcList">
-    ${userCards || `<div class="empty">No scripts have been uploaded yet.</div>`}
-  </div>
-</main>
-
-<style>
-.src-user{margin-bottom:22px;padding:20px;border:1px solid var(--line2);border-radius:16px;background:var(--panel)}
-.src-user-head{display:flex;align-items:center;gap:14px;padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:14px;flex-wrap:wrap}
-.src-user-avatar{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,var(--gold),var(--amber));font-size:20px;flex-shrink:0}
-.src-user-name{font-weight:700;font-size:16px;letter-spacing:-.3px}
-.src-user-id{font-size:12px;color:var(--mute);font-family:var(--mono);margin-top:2px}
-.src-user-badges{margin-left:auto}
-.src-user-body{display:grid;gap:12px}
-.src-script{padding:14px;border:1px solid var(--line);border-radius:12px;background:#0e0c0a}
-.src-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start}
-.src-title{font-weight:700;font-size:15px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.src-meta{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mute);font-family:var(--mono);margin-top:8px}
-.src-act{display:flex;gap:8px;flex-wrap:wrap}
-.src-pre{margin-top:12px;max-height:420px;overflow:auto;font-size:12px;line-height:1.55}
-@media(max-width:700px){
-  .src-head{flex-direction:column}
-  .src-act{width:100%}
-  .src-act .btn{flex:1}
-  .src-user-badges{margin-left:0}
-}
-</style>
-
-<script>
-async function viewSource(id, btn){
-  var pre = document.getElementById('src-' + id);
-  if (pre.style.display === 'block') {
-    pre.style.display = 'none';
-    btn.textContent = 'View Source';
-    return;
-  }
-  btn.disabled = true;
-  btn.textContent = 'Loading...';
-  pre.style.display = 'block';
-  pre.textContent = '// Loading source...';
-  try {
-    var r = await fetch('/api/scripts/' + id + '/source/admin');
-    if (!r.ok) {
-      pre.textContent = '// Failed to load source (HTTP ' + r.status + ')';
-      btn.disabled = false;
-      btn.textContent = 'View Source';
-      return;
-    }
-    var d = await r.json();
-    pre.textContent = d.source || '// Empty source';
-    btn.disabled = false;
-    btn.textContent = 'Hide Source';
-  } catch (e) {
-    pre.textContent = '// Error: ' + e.message;
-    btn.disabled = false;
-    btn.textContent = 'View Source';
-  }
-}
-
-function downloadSource(id, name) {
-  // Direct file download via dedicated endpoint (session cookie is sent automatically)
-  var a = document.createElement('a');
-  a.href = '/api/scripts/' + id + '/source/admin/download';
-  a.download = '';
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  if (typeof toast === 'function') toast('Downloading...', 'ok');
-}
-
-function copyLoader(url){
-  copyText('loadstring(game:HttpGet("' + url + '"))()');
-}
-
-document.getElementById('srcSearch').addEventListener('input', function(e){
-  var q = e.target.value.toLowerCase().trim();
-  document.querySelectorAll('.src-user').forEach(function(card){
-    var text = card.textContent.toLowerCase();
-    card.style.display = (!q || text.includes(q)) ? '' : 'none';
-  });
-});
-</script>`;
-
-  res.send(page({
-    req,
-    title: "Kingmor — Player Source",
-    active: "sources",
-    body,
-  }));
-});
-
-// ==================== ADMIN PAGE ====================
-
-app.get("/admin/dashboard", isAdmin, (req, res) => {
-  const db = readDB();
-  const keys = readKeys();
-  const premium = readPremium();
-  const pkeys = readPremiumKeys();
-
-  const rows = [
-    ["Total scripts", db.length],
-    ["Total users", new Set(db.map((s) => s.ownerId)).size],
-    ["Total keys", keys.length],
-    ["Enabled scripts", db.filter((s) => s.enabled).length],
-    ["Premium users", Object.keys(premium).filter((id) => isPremium(id)).length],
-    ["Premium keys (unused)", pkeys.filter((k) => !k.redeemedBy).length],
-    ["Premium keys (redeemed)", pkeys.filter((k) => k.redeemedBy).length],
-  ];
-  const body = `<main class="wrap center"><div class="card" style="width:min(560px,100%)">
-    <h1>Admin overview</h1>
-    <div class="kv">${rows.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join("")}</div>
-    <div class="stack">
-      <a class="btn btn-gold btn-block" href="/admin/sources">🕵️ Player Source</a>
-      <a class="btn btn-ghost btn-block" href="/dashboard">Back to dashboard</a>
-    </div>
-  </div></main>`;
-  res.send(page({ req, title: "Kingmor — Admin", active: "admin", body, bare: true }));
-});
-
-// ==================== HEALTH CHECK ====================
-app.get("/health", (req, res) => {
-  res.status(200).json({
-    status: "ok",
-    uptime: process.uptime(),
-    databaseReady: !!databaseReady,
-  });
-});
-
-// ==================== START ====================
-async function startServer() {
-  // Listen first so Railway does not show 502 while DB is connecting
-  app.listen(PORT, () => {
-    console.log(`Kingmor running on port ${PORT}`);
-    console.log(`API_SECRET loaded: ${API_SECRET ? "yes (" + API_SECRET.length + " chars)" : "NO"}`);
-    console.log(`Premium price: ${PREMIUM_PRICE_IDR} / ${PREMIUM_PRICE_USD}`);
-    console.log(`Script limits: free ${SCRIPT_LIMIT.free}, premium ${SCRIPT_LIMIT.premium}`);
-  });
-
-  const maxAttempts = 10;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await initPostgres();
-      console.log(`PostgreSQL: connected`);
-      return;
-    } catch (err) {
-      console.error(`❌ PostgreSQL startup attempt ${attempt}/${maxAttempts} failed:`, err.message || err);
-      if (attempt === maxAttempts) {
-        console.error("❌ PostgreSQL still unavailable after retries. Process stays up for /health; fix DATABASE_URL and redeploy.");
-        return;
-      }
-      await new Promise((r) => setTimeout(r, 2000 * attempt));
-    }
-  }
-}
-
-async function shutdown(signal) {
-  console.log(`\n${signal} received. Waiting for database writes...`);
-  try {
-    await dbWriteQueue;
-    await pool.end();
-  } catch (e) {
-    console.error("Shutdown error:", e.message);
-  } finally {
-    process.exit(0);
-  }
-}
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
-
-startServer();
+app.get("/admin", isAdm
