@@ -2333,6 +2333,70 @@ ${sourceCode}`;
     }
 
     // ----- Full loader bootstrap -----
+    // Public format (no ?key= in URL):
+    //   script_key = "KEY"
+    //   loadstring(game:HttpGet(".../api/loader/ID.lua"))()
+    // Stage-1 reads global script_key, then fetches the real payload with key internally.
+    if (!isFreeMode && !providedKey && !isPack) {
+      const stage1 = `-- Kingmor loader
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local lp = Players.LocalPlayer
+
+local function httpget(url)
+  local list = {}
+  local function add(f) if type(f) == "function" then list[#list + 1] = f end end
+  if type(request) == "function" then add(function(u) local r = request({ Url = u, Method = "GET", Headers = { ["User-Agent"] = "Kingmor/5" } }) if type(r) == "table" then return r.Body or r.body or r.Data or r.data end end) end
+  if type(http_request) == "function" then add(function(u) local r = http_request({ Url = u, Method = "GET" }) if type(r) == "table" then return r.Body or r.body end end) end
+  if type(syn) == "table" and type(syn.request) == "function" then add(function(u) local r = syn.request({ Url = u, Method = "GET" }) if type(r) == "table" then return r.Body or r.body end end) end
+  if type(http) == "table" and type(http.request) == "function" then add(function(u) local r = http.request({ Url = u, Method = "GET" }) if type(r) == "table" then return r.Body or r.body end end) end
+  if type(fluxus) == "table" and type(fluxus.request) == "function" then add(function(u) local r = fluxus.request({ Url = u, Method = "GET" }) if type(r) == "table" then return r.Body or r.body end end) end
+  add(function(u) if type(game.HttpGet) == "function" then return game:HttpGet(u) end end)
+  add(function(u) return HttpService:GetAsync(u, true) end)
+  local last = "no http"
+  for i = 1, #list do
+    local ok, res = pcall(list[i], url)
+    if ok and type(res) == "string" and #res > 0 then return res end
+    last = tostring(res)
+  end
+  error(last)
+end
+
+local key = rawget(_G, "script_key") or rawget(_G, "ScriptKey") or script_key
+if type(key) ~= "string" or #key < 4 then
+  if lp then lp:Kick("[Kingmor] Set script_key = \"YOUR_KEY\" before running the loader") end
+  return
+end
+key = string.lower(string.gsub(key, "^%s*(.-)%s*$", "%1"))
+
+local url = ${JSON.stringify(base + "/api/loader/" + scriptId + ".lua")} .. "?key=" .. key .. "&raw=1"
+local ok, body = pcall(httpget, url)
+if not ok or type(body) ~= "string" or #body < 8 then
+  if lp then lp:Kick("[Kingmor] Failed to download script") end
+  return
+end
+if string.sub(body, 1, 10) == "-- Kingmor" and string.find(body, "Kick", 1, true) and not string.find(body, "secure loader", 1, true) and not string.find(body, "KM-OBF", 1, true) then
+  local fn = (loadstring or load)(body)
+  if fn then pcall(fn) end
+  return
+end
+local loader = loadstring or load
+if type(loader) ~= "function" then
+  if lp then lp:Kick("[Kingmor] No loadstring") end
+  return
+end
+local fn, err = loader(body)
+if not fn then
+  warn("[Kingmor] compile:", err)
+  if lp then lp:Kick("[Kingmor] Script compile error") end
+  return
+end
+local okRun, runErr = pcall(fn)
+if not okRun then warn("[Kingmor] runtime:", runErr) end
+`;
+      return sendLua(stage1);
+    }
+
     const auth = validateKey(providedKey);
     if (!auth.ok) return sendLua(kickPlayer(auth.reason));
 
@@ -2361,7 +2425,7 @@ ${sourceCode}`;
   const loaderDisplay = isFreeMode
     ? `loadstring(game:HttpGet("${base}/api/loader/${scriptId}.lua"))()`
     : userScriptKey
-      ? `script_key="${userScriptKey}"\\nloadstring(game:HttpGet("${base}/api/loader/${scriptId}.lua?key="..script_key))()`
+      ? `script_key="${userScriptKey}"\\nloadstring(game:HttpGet("${base}/api/loader/${scriptId}.lua"))()`
       : `loadstring(game:HttpGet("${base}/api/loader/${scriptId}.lua"))()`;
 
   return res.status(200).send(page({
@@ -2583,8 +2647,8 @@ app.get("/", (req, res) => {
       <div class="term-bar"><s></s><s></s><s></s><span>executor</span></div>
       <div class="term-body">
         <span class="ln"><span class="c">-- what your buyer runs</span></span>
-        <span class="ln"><span class="k">script_key</span> = <span class="s">"a91f…c0d4"</span></span>
-        <span class="ln"><span class="k">loadstring</span>(game:<span class="k">HttpGet</span>(<span class="s">"${escapeHtml(base)}/api/loader/3fa9…e1.lua?key="</span>..script_key))()</span>
+        <span class="ln"><span class="k">script_key</span> = <span class="s">"YOUR_KEY"</span></span>
+        <span class="ln"><span class="k">loadstring</span>(game:<span class="k">HttpGet</span>(<span class="s">"${escapeHtml(base)}/api/loader/3fa9…e1.lua"</span>))()</span>
         <span class="ln"><span class="c">-- server side</span></span>
         <span class="ln"><span class="ok">✓</span> key valid, not expired</span>
         <span class="ln"><span class="ok">✓</span> HWID matches the bound device</span>
