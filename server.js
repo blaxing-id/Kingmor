@@ -775,28 +775,35 @@ function buildSecureLoader(plain, userKey, freeModeFlag, base, scriptId, doObfus
     ? `local uk = ""`
     : useGlobalKey
       ? `local uk = nil
+-- resolve script_key from executor env
 pcall(function()
   if type(getgenv) == "function" then
     local g = getgenv()
-    if type(g) == "table" then uk = g.script_key or g.ScriptKey end
+    if type(g) == "table" and type(g.script_key) == "string" then uk = g.script_key end
+    if (not uk or #tostring(uk) < 4) and type(g) == "table" and type(g.ScriptKey) == "string" then uk = g.ScriptKey end
   end
 end)
 if type(uk) ~= "string" or #uk < 4 then
   pcall(function()
-    if type(getrenv) == "function" then
-      local r = getrenv()
-      if type(r) == "table" then uk = r.script_key or r.ScriptKey end
+    if type(_G) == "table" then
+      if type(_G.script_key) == "string" then uk = _G.script_key end
+      if (not uk or #tostring(uk) < 4) and type(_G.ScriptKey) == "string" then uk = _G.ScriptKey end
     end
   end)
 end
 if type(uk) ~= "string" or #uk < 4 then
-  pcall(function() uk = rawget(_G, "script_key") or rawget(_G, "ScriptKey") end)
+  pcall(function()
+    if type(shared) == "table" and type(shared.script_key) == "string" then uk = shared.script_key end
+  end)
 end
 if type(uk) ~= "string" or #uk < 4 then
-  pcall(function() uk = script_key end)
+  pcall(function()
+    local ok, v = pcall(function() return script_key end)
+    if ok and type(v) == "string" then uk = v end
+  end)
 end
 if type(uk) ~= "string" or #uk < 4 then
-  if lp then lp:Kick("[Kingmor] Set script_key = \"YOUR_KEY\" before running the loader") end
+  if lp then lp:Kick("[Kingmor] Set script_key before running the loader") end
   return
 end
 uk = string.lower((tostring(uk):gsub("^%s+", ""):gsub("%s+$", "")))`
