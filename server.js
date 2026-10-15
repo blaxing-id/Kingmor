@@ -599,10 +599,13 @@ function readScriptSource(script) {
   return null;
 }
 
-// ==================== LUA OBFUSCATOR (KM-VM v6 — hardened multi-stage) ====================
-// Multi-layer stream cipher + encrypted handler table + scrambled dispatch.
-// Still loadstring-final (required for full Lua compat & large scripts).
-// Harder for static signature tools (073 Luraph/IB modules) — not "impossible" vs runtime dump.
+// ==================== LUA OBFUSCATOR (KM-VM v7 — anti-static-analysis) ====================
+// Hardened vs pattern-matching tools (regex on 32-int arrays, static constants, header sigs).
+// - Keys never appear as plain {n,n,n,...} arrays — split into masked halves at runtime
+// - Multipliers/adders randomized per-run from a safe LCG pool (not hardcoded constants)
+// - Roll key split across 2 vars + reconstructed inline
+// - Header comment randomized or omitted entirely
+// - Seed values encoded via arithmetic expression, not raw integer literals
 function obfuscateLua(plainSource) {
   const src = String(plainSource || "");
   if (!src.trim()) return src;
@@ -633,21 +636,33 @@ function obfuscateLua(plainSource) {
     return out;
   }
 
-  // 3-layer encrypt with independent keys
+  // --- ANTI-STATIC: randomize multipliers/adders from a pool of valid LCG constants ---
+  // All are known good LCG params (Hull-Dobell theorem satisfied)
+  const MUL_POOL = [1103515245, 214013, 1664525, 22695477, 1140671485, 134775813, 6364136223846793005n];
+  const ADD_POOL = [12345, 2531011, 1013904223, 1, 12211, 2891336453, 1442695040888963407n];
+  // Pick 3 distinct indices
+  const pickedIdx = [];
+  while (pickedIdx.length < 3) {
+    const i = rndU32() % 6; // keep to non-BigInt entries (0-5)
+    if (!pickedIdx.includes(i)) pickedIdx.push(i);
+  }
+  const muls = pickedIdx.map(i => MUL_POOL[i]);
+  const adds = pickedIdx.map(i => ADD_POOL[i]);
+
+  // 3-layer encrypt with independent random keys
   const keys = [crypto.randomBytes(32), crypto.randomBytes(32), crypto.randomBytes(32)];
   const seeds = [
     (rndU32() & 0x7fffffff) | 1,
     (rndU32() & 0x7fffffff) | 1,
     (rndU32() & 0x7fffffff) | 1,
   ];
-  const muls = [1103515245, 214013, 1664525];
-  const adds = [12345, 2531011, 1013904223];
 
   let buf = Buffer.from(src, "utf8");
   for (let L = 0; L < 3; L++) {
     buf = scrambleLayer(buf, keys[L], seeds[L], muls[L], adds[L]);
   }
-  // final XOR with rolling position key (extra stage)
+
+  // final XOR with rolling position key
   const roll = crypto.randomBytes(16);
   for (let i = 0; i < buf.length; i++) {
     buf[i] ^= roll[i & 15] ^ ((i * 31) & 255);
@@ -657,15 +672,12 @@ function obfuscateLua(plainSource) {
   const pieceSize = 1800 + (rndU32() % 700);
   const pieces = [];
   for (let i = 0; i < b64.length; i += pieceSize) pieces.push(b64.slice(i, i + pieceSize));
-  // shuffle piece order
   const order = pieces.map((_, i) => i);
   for (let i = order.length - 1; i > 0; i--) {
     const j = rndU32() % (i + 1);
     const t = order[i]; order[i] = order[j]; order[j] = t;
   }
   const shuffled = order.map((oi) => pieces[oi]);
-  // inv[pos] = original index for unshuffle: shuffled[i] belongs at order[i]
-  // restore: slots[order[i]+1] = shuffled[i]
 
   // opcodes
   const used = new Set();
@@ -683,7 +695,6 @@ function obfuscateLua(plainSource) {
   for (let i = 1; i <= shuffled.length; i++) program.push(OP.LOADK, i);
   program.push(OP.UNSHUF, OP.CONCAT, OP.B64, OP.ROLL, OP.DEC2, OP.DEC1, OP.DEC0, OP.LOAD, OP.CALL, OP.RET);
 
-  // decoy
   function rndStr(n) {
     const A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/!@#";
     let s = "";
@@ -696,22 +707,63 @@ function obfuscateLua(plainSource) {
   const poolB = Array.from({ length: 48 }, () => rndU32() % 1e6).join(",");
 
   const v = {};
-  for (const k of ["ls","k0","k1","k2","s0","s1","s2","m0","m1","m2","a0","a1","a2","roll",
-    "chunks","ord","code","xor","b64","layer","umul","st","pc","n","decoy","pa","pb","tmp"]) {
+  for (const k of ["ls","k0","k1","k2","km0","km1","s0","s1","s2","m0","m1","m2","a0","a1","a2",
+    "roll","rA","rB","chunks","ord","code","xor","b64","layer","umul","st","pc","n","decoy","pa","pb","tmp"]) {
     v[k] = id();
   }
 
-  const kLua = keys.map((k) => Array.from(k).join(","));
+  // --- ANTI-STATIC: mask each 32-byte key by XOR with a random 32-byte mask ---
+  // Output: two arrays of 32 ints each, neither matches the tool's regex for "the real key"
+  // Lua runtime recovers original key = masked[i] XOR kmask[i]
+  const kMasked = keys.map(k => {
+    const mask = crypto.randomBytes(32);
+    const masked = Buffer.allocUnsafe(32);
+    for (let i = 0; i < 32; i++) masked[i] = (k[i] + mask[i]) % 256;
+    return { masked: Array.from(masked).join(","), mask: Array.from(mask).join(",") };
+  });
+
+  // --- ANTI-STATIC: split roll key into two 8-byte halves stored in separate vars ---
+  const rollA = Array.from(roll.slice(0, 8)).join(",");
+  const rollB = Array.from(roll.slice(8, 16)).join(",");
+
+  // --- ANTI-STATIC: encode seeds as arithmetic expression, not raw int literal ---
+  // seed = (base + offset) where base and offset are random but sum to original seed
+  const seedExprs = seeds.map(s => {
+    const offset = rndU32() & 0xffffff;
+    const base = (s - offset + 0x100000000) >>> 0;
+    return `(${base}+${offset})%4294967296`;
+  });
+
+  // --- ANTI-STATIC: encode mul/add constants via XOR expression ---
+  const mulExprs = muls.map(m => {
+    const x = rndU32() & 0xffff;
+    return `(${m ^ x})~${x}`; // Lua: bit32 not available in all contexts; use math trick instead
+  });
+  // Fallback: encode as sum of two random halves (simpler, works without bit32)
+  const mulEncoded = muls.map(m => {
+    const half = rndU32() & 0x3fffffff;
+    return `(${half}+(${(m - half + 0x100000000) >>> 0}))`;
+  });
+  const addEncoded = adds.map(a => {
+    const half = rndU32() & 0x3fffffff;
+    return `(${half}+(${(a - half + 0x100000000) >>> 0}))`;
+  });
+
+  // --- ANTI-STATIC: randomize comment header (blank, fake, or random string) ---
+  const headerVariants = [
+    ``,
+    `-- ${rndStr(8 + rndU32() % 12)}`,
+    `-- v${1 + rndU32() % 9}.${rndU32() % 10}`,
+    `-- ${["runtime","loader","module","core","init","main"][rndU32() % 6]}`,
+  ];
+  const header = headerVariants[rndU32() % headerVariants.length];
+
   const chunksLua = shuffled.map((p, i) => `[${i + 1}]=[=[${p}]=]`).join(",");
   const ordLua = order.map((o, i) => `[${i + 1}]=${o + 1}`).join(",");
   const codeLua = program.join(",");
-  const rollLua = Array.from(roll).join(",");
   const decoyLua = decoys.join(",");
 
-  // scramble dispatch: handler index = (op * X + Y) % P mapped via table
-  // keep simple if/elseif but with NOP noise and order of branches randomized visually
-
-  return `-- This Obfuscate Generated By Kingmor https://discord.gg/KqXUFaqWX
+  return `${header}
 return(function()
 local ${v.ls}=loadstring or load
 if type(${v.ls})~="function" then
@@ -719,19 +771,24 @@ if type(${v.ls})~="function" then
   if type(e)=="table" then ${v.ls}=e.loadstring or e.load end
 end
 if type(${v.ls})~="function" then return end
-local ${v.k0}={${kLua[0]}}
-local ${v.k1}={${kLua[1]}}
-local ${v.k2}={${kLua[2]}}
-local ${v.s0}=${seeds[0]}
-local ${v.s1}=${seeds[1]}
-local ${v.s2}=${seeds[2]}
-local ${v.m0}=${muls[0]}
-local ${v.m1}=${muls[1]}
-local ${v.m2}=${muls[2]}
-local ${v.a0}=${adds[0]}
-local ${v.a1}=${adds[1]}
-local ${v.a2}=${adds[2]}
-local ${v.roll}={${rollLua}}
+local ${v.km0}={${kMasked[0].mask}}
+local ${v.k0}=(function() local t={${kMasked[0].masked}} local r={} for i=1,32 do r[i]=t[i]~=nil and (t[i]+${v.km0}[i])%256 or 0 end return r end)()
+local ${v.km1}={${kMasked[1].mask}}
+local ${v.k1}=(function() local t={${kMasked[1].masked}} local r={} for i=1,32 do r[i]=t[i]~=nil and (t[i]+${v.km1}[i])%256 or 0 end return r end)()
+local ${v.km2}={${kMasked[2].mask}}
+local ${v.k2}=(function() local t={${kMasked[2].masked}} local r={} for i=1,32 do r[i]=t[i]~=nil and (t[i]+${v.km2}[i])%256 or 0 end return r end)()
+local ${v.s0}=${seedExprs[0]}
+local ${v.s1}=${seedExprs[1]}
+local ${v.s2}=${seedExprs[2]}
+local ${v.m0}=${mulEncoded[0]}
+local ${v.m1}=${mulEncoded[1]}
+local ${v.m2}=${mulEncoded[2]}
+local ${v.a0}=${addEncoded[0]}
+local ${v.a1}=${addEncoded[1]}
+local ${v.a2}=${addEncoded[2]}
+local ${v.rA}={${rollA}}
+local ${v.rB}={${rollB}}
+local ${v.roll}=(function() local t={} for i=1,8 do t[i]=${v.rA}[i] end for i=1,8 do t[8+i]=${v.rB}[i] end return t end)()
 local ${v.chunks}={${chunksLua}}
 local ${v.ord}={${ordLua}}
 local ${v.code}={${codeLua}}
@@ -871,7 +928,6 @@ end
 end)()
 `;
 }
-
 // Ephemeral encrypted delivery for reliable large-script loading
 const DELIVER_DIR = path.join(DATA_DIR, "deliver");
 fs.mkdirSync(DELIVER_DIR, { recursive: true });
