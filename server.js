@@ -1164,7 +1164,7 @@ ${sharedDecode}
 local function nap(sec) pcall(function() if task and task.wait then task.wait(sec) else wait(sec) end end) end
 local pieces={}
 for i=1,parts do
-  local url=partBase..tostring(i)${freeModeFlag ? "" : ` .. "&key=" .. uk`}
+  local url=partBase..tostring(i)${freeModeFlag || !useGlobalKey ? "" : ` .. "&key=" .. uk`}
   local body,lastErr=nil,nil
   for attempt=1,6 do
     local ok,res=pcall(httpget,url)
@@ -1242,7 +1242,7 @@ function requireInternalSecret(req, res, next) {
 }
 
 // ==================== UI KIT ====================
-const FONTS = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">`;
+const FONTS = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">`;
 
 const FAVICON = `<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
@@ -1251,196 +1251,241 @@ const FAVICON = `<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch
 <link rel="manifest" href="/site.webmanifest">`;
 
 const CSS = `
-:root{--bg:#0a0908;--panel:#14110e;--panel2:#1a1612;--line:#2b241c;--line2:#3d3226;--gold:#f2c14e;--amber:#e08a00;--ink:#f6f0e4;--mute:#a39786;--ok:#6fdc8c;--bad:#ff6b5e;--mono:'JetBrains Mono','Courier New',monospace}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&family=Sora:wght@400;500;600;700;800&display=swap');
+
+:root{
+  --bg:#070608;
+  --bg2:#0b0a0d;
+  --panel:#111016;
+  --panel2:#17151d;
+  --line:rgba(255,255,255,.08);
+  --line2:rgba(255,255,255,.14);
+  --gold:#ffb340;
+  --amber:#ff7a1a;
+  --violet:#8b5cf6;
+  --violet2:#a855f7;
+  --cyan:#22d3ee;
+  --ink:#f8f6f2;
+  --mute:#9b94a8;
+  --mute2:#6b6478;
+  --ok:#34e07a;
+  --bad:#ff5566;
+  --mono:'JetBrains Mono','Courier New',monospace;
+  --radius:16px;
+  --radius-lg:22px;
+  --shadow-sm:0 2px 10px rgba(0,0,0,.25);
+  --shadow-md:0 16px 48px rgba(0,0,0,.45);
+  --shadow-glow:0 0 60px rgba(255,179,64,.12);
+  --grad-gold:linear-gradient(135deg,#ffcf6e 0%,#ff9d2e 55%,#ff7a1a 100%);
+  --grad-violet:linear-gradient(135deg,#a78bfa 0%,#8b5cf6 55%,#7c3aed 100%);
+  --grad-mesh:radial-gradient(1200px 700px at 85% -10%,rgba(255,179,64,.14),transparent 55%),radial-gradient(900px 600px at -5% 20%,rgba(139,92,246,.12),transparent 55%),radial-gradient(700px 500px at 50% 110%,rgba(34,211,238,.06),transparent 60%);
+}
 *{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
-body{font-family:'Sora','Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--ink);line-height:1.6;min-height:100vh;
-background-image:radial-gradient(900px 520px at 88% -8%,rgba(242,193,78,.11),transparent 60%),radial-gradient(700px 420px at -10% 35%,rgba(224,138,0,.06),transparent 60%);background-repeat:no-repeat}
+body{
+  font-family:'Inter','Sora','Segoe UI',system-ui,sans-serif;
+  background:var(--bg);color:var(--ink);line-height:1.65;min-height:100vh;
+  background-image:var(--grad-mesh);background-repeat:no-repeat;background-attachment:fixed;
+  -webkit-font-smoothing:antialiased;letter-spacing:-.01em;
+}
 a{color:inherit;text-decoration:none}
 button,input,textarea{font-family:inherit}
-:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
-.wrap{width:min(1120px,calc(100% - 32px));margin:0 auto}
+:focus-visible{outline:2px solid var(--gold);outline-offset:3px;border-radius:4px}
+::selection{background:rgba(255,179,64,.3);color:#fff}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--line2);border-radius:99px}
+::-webkit-scrollbar-thumb:hover{background:var(--mute2)}
+.wrap{width:min(1180px,calc(100% - 32px));margin:0 auto}
 
-.nav{position:sticky;top:0;z-index:50;background:rgba(10,9,8,.82);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
-.nav-in{display:flex;align-items:center;gap:24px;height:64px}
-.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;letter-spacing:-.2px}
-.brand i{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;font-style:normal;font-size:17px;background:linear-gradient(135deg,var(--gold),var(--amber));color:#1a1100}
-.nav-links{display:flex;gap:4px;margin-left:12px;flex:1}
-.nav-links a{padding:8px 14px;border-radius:8px;font-size:14px;color:var(--mute);font-weight:500;transition:color .15s,background .15s}
-.nav-links a:hover{color:var(--ink);background:rgba(255,255,255,.04)}
-.nav-links a.on{color:var(--gold)}
-.nav-right{display:flex;align-items:center;gap:10px}
-.avatar{width:32px;height:32px;border-radius:50%;border:2px solid var(--line2)}
-.burger{display:none;background:none;border:1px solid var(--line2);color:var(--ink);width:40px;height:40px;border-radius:10px;font-size:18px;cursor:pointer}
+/* ===== NAV ===== */
+.nav{position:sticky;top:0;z-index:50;background:rgba(7,6,8,.72);backdrop-filter:blur(20px) saturate(140%);border-bottom:1px solid var(--line)}
+.nav-in{display:flex;align-items:center;gap:28px;height:68px}
+.brand{display:flex;align-items:center;gap:11px;font-weight:800;font-size:19px;letter-spacing:-.4px;font-family:'Sora',sans-serif}
+.brand i{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-style:normal;font-size:17px;background:var(--grad-gold);color:#1a1100;box-shadow:0 4px 18px rgba(255,154,30,.35);font-weight:800}
+.nav-links{display:flex;gap:2px;margin-left:8px;flex:1}
+.nav-links a{padding:9px 15px;border-radius:10px;font-size:14px;color:var(--mute);font-weight:500;transition:color .18s,background .18s;position:relative}
+.nav-links a:hover{color:var(--ink);background:rgba(255,255,255,.05)}
+.nav-links a.on{color:var(--gold);background:rgba(255,179,64,.08)}
+.nav-right{display:flex;align-items:center;gap:12px}
+.avatar{width:33px;height:33px;border-radius:50%;border:2px solid var(--line2);box-shadow:0 2px 10px rgba(0,0,0,.3)}
+.burger{display:none;background:none;border:1px solid var(--line2);color:var(--ink);width:40px;height:40px;border-radius:11px;font-size:18px;cursor:pointer;transition:border-color .15s}
+.burger:hover{border-color:var(--gold)}
 @media(max-width:860px){
  .burger{display:block;margin-left:auto}
- .nav-links{display:none;position:absolute;top:64px;left:0;right:0;flex-direction:column;background:var(--bg);border-bottom:1px solid var(--line);padding:10px 16px 16px;margin:0}
+ .nav-links{display:none;position:absolute;top:68px;left:0;right:0;flex-direction:column;background:var(--bg2);border-bottom:1px solid var(--line);padding:10px 16px 16px;margin:0;box-shadow:var(--shadow-md)}
  .nav-links.open{display:flex}
  .nav-right .uname{display:none}
  .nav-right{margin-left:0}
 }
 
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 20px;border-radius:10px;font-weight:700;font-size:14px;border:1px solid transparent;cursor:pointer;transition:transform .15s,filter .15s,background .15s;white-space:nowrap}
-.btn:hover{transform:translateY(-1px)}
+/* ===== BUTTONS ===== */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:13px 22px;border-radius:12px;font-weight:700;font-size:14px;border:1px solid transparent;cursor:pointer;transition:transform .18s cubic-bezier(.2,.8,.2,1),filter .18s,background .18s,box-shadow .18s;white-space:nowrap;letter-spacing:-.1px}
+.btn:hover{transform:translateY(-2px)}
+.btn:active{transform:translateY(0)}
 .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
-.btn-gold{background:linear-gradient(135deg,var(--gold),var(--amber));color:#1a1100}
-.btn-gold:hover{filter:brightness(1.08)}
-.btn-ghost{background:transparent;border-color:var(--line2);color:var(--ink)}
-.btn-ghost:hover{background:rgba(255,255,255,.04)}
-.btn-discord{background:#5865F2;color:#fff}
-.btn-sm{padding:8px 14px;font-size:13px}
+.btn-gold{background:var(--grad-gold);color:#1a1100;box-shadow:0 10px 30px rgba(255,154,30,.28),inset 0 1px 0 rgba(255,255,255,.3)}
+.btn-gold:hover{filter:brightness(1.07);box-shadow:0 14px 36px rgba(255,154,30,.4)}
+.btn-ghost{background:rgba(255,255,255,.03);border-color:var(--line2);color:var(--ink);backdrop-filter:blur(8px)}
+.btn-ghost:hover{background:rgba(255,255,255,.07);border-color:var(--gold)}
+.btn-discord{background:#5865F2;color:#fff;box-shadow:0 10px 26px rgba(88,101,242,.3)}
+.btn-discord:hover{filter:brightness(1.1)}
+.btn-sm{padding:9px 15px;font-size:13px;border-radius:10px}
 .btn-block{width:100%}
-.badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:999px;font-size:12px;font-weight:700}
-.badge.prem{background:linear-gradient(135deg,var(--gold),var(--amber));color:#1a1100}
-.badge.free{background:rgba(255,255,255,.06);border:1px solid var(--line2);color:var(--mute)}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:5px 13px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.1px}
+.badge.prem{background:var(--grad-gold);color:#1a1100;box-shadow:0 4px 14px rgba(255,154,30,.3)}
+.badge.free{background:rgba(255,255,255,.05);border:1px solid var(--line2);color:var(--mute)}
 
-.hero{padding:84px 0 64px;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
-.hero h1{font-size:clamp(34px,5vw,58px);line-height:1.08;letter-spacing:-1.6px;font-weight:800}
-.hero h1 em{font-style:normal;background:linear-gradient(135deg,var(--gold),var(--amber));-webkit-background-clip:text;background-clip:text;color:transparent}
-.hero p.lead{margin-top:20px;color:var(--mute);font-size:17px;max-width:520px}
-.hero-cta{margin-top:30px;display:flex;gap:12px;flex-wrap:wrap}
-.hero-stats{margin-top:38px;display:flex;gap:34px;flex-wrap:wrap}
-.hero-stats b{display:block;font-size:26px;letter-spacing:-.5px}
-.hero-stats span{font-size:13px;color:var(--mute)}
-@media(max-width:860px){.hero{grid-template-columns:1fr;padding:48px 0 40px;gap:36px}}
+/* ===== HERO ===== */
+.hero{padding:96px 0 72px;display:grid;grid-template-columns:1.05fr .95fr;gap:52px;align-items:center}
+.hero h1{font-family:'Sora',sans-serif;font-size:clamp(36px,5.2vw,62px);line-height:1.06;letter-spacing:-2px;font-weight:800}
+.hero h1 em{font-style:normal;background:var(--grad-gold);-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero p.lead{margin-top:22px;color:var(--mute);font-size:17.5px;max-width:530px;line-height:1.7}
+.hero-cta{margin-top:32px;display:flex;gap:12px;flex-wrap:wrap}
+.hero-stats{margin-top:42px;display:flex;gap:36px;flex-wrap:wrap}
+.hero-stats b{display:block;font-size:28px;letter-spacing:-.8px;font-family:'Sora',sans-serif;background:linear-gradient(135deg,#fff,#c8c2d4);-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero-stats span{font-size:13px;color:var(--mute2);font-weight:500}
+@media(max-width:860px){.hero{grid-template-columns:1fr;padding:52px 0 40px;gap:36px}}
 
-.term{border:1px solid var(--line2);border-radius:16px;background:#0e0c0a;box-shadow:0 30px 80px rgba(0,0,0,.55),0 0 0 1px rgba(242,193,78,.05);overflow:hidden}
-.term-bar{display:flex;align-items:center;gap:7px;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+.term{border:1px solid var(--line2);border-radius:var(--radius-lg);background:#0a090c;box-shadow:var(--shadow-md),0 0 0 1px rgba(255,179,64,.06),var(--shadow-glow);overflow:hidden;position:relative}
+.term::before{content:"";position:absolute;inset:0;background:linear-gradient(160deg,rgba(255,179,64,.04),transparent 40%);pointer-events:none}
+.term-bar{display:flex;align-items:center;gap:7px;padding:13px 17px;border-bottom:1px solid var(--line);background:var(--panel)}
 .term-bar s{width:10px;height:10px;border-radius:50%;background:var(--line2);text-decoration:none}
-.term-bar span{margin-left:8px;font-size:12px;color:var(--mute);font-family:var(--mono)}
-.term-body{padding:20px 18px;font-family:var(--mono);font-size:12.5px;line-height:1.9;overflow-x:auto}
-.term-body .c{color:#6e6355}
+.term-bar span{margin-left:8px;font-size:12px;color:var(--mute2);font-family:var(--mono)}
+.term-body{padding:22px 19px;font-family:var(--mono);font-size:12.5px;line-height:2;overflow-x:auto}
+.term-body .c{color:#5f5870}
 .term-body .k{color:var(--gold)}
-.term-body .s{color:#9fd3a8;white-space:pre-wrap;word-break:break-all}
+.term-body .s{color:#8fe3c4;white-space:pre-wrap;word-break:break-all}
 .term-body .ok{color:var(--ok)}
-.term-body .ln{display:block;opacity:0;animation:ln .35s forwards}
+.term-body .ln{display:block;opacity:0;animation:ln .4s forwards}
 .term-body .ln:nth-child(1){animation-delay:.2s}.term-body .ln:nth-child(2){animation-delay:.5s}.term-body .ln:nth-child(3){animation-delay:.8s}
 .term-body .ln:nth-child(4){animation-delay:1.3s}.term-body .ln:nth-child(5){animation-delay:1.7s}.term-body .ln:nth-child(6){animation-delay:2.1s}.term-body .ln:nth-child(7){animation-delay:2.5s}
 @keyframes ln{to{opacity:1}}
 
-.section{padding:72px 0;border-top:1px solid var(--line)}
-.section h2{font-size:clamp(26px,3.4vw,38px);letter-spacing:-1px;line-height:1.15;font-weight:800}
-.section .sub{color:var(--mute);margin-top:12px;max-width:560px}
-.split{display:grid;grid-template-columns:.8fr 1.2fr;gap:56px}
+.section{padding:80px 0;border-top:1px solid var(--line);position:relative}
+.section h2{font-family:'Sora',sans-serif;font-size:clamp(28px,3.6vw,40px);letter-spacing:-1.2px;line-height:1.15;font-weight:800}
+.section .sub{color:var(--mute);margin-top:14px;max-width:580px;font-size:15.5px}
+.split{display:grid;grid-template-columns:.8fr 1.2fr;gap:60px}
 @media(max-width:860px){.split{grid-template-columns:1fr;gap:28px}}
-.rows>div{padding:20px 0;border-bottom:1px solid var(--line)}
+.rows>div{padding:22px 0;border-bottom:1px solid var(--line)}
 .rows>div:first-child{padding-top:0}
-.rows h3{font-size:16px;font-weight:700}
-.rows p{color:var(--mute);font-size:14px;margin-top:4px}
-.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:36px;counter-reset:s}
-.steps>div{padding:24px;border:1px solid var(--line);border-radius:14px;background:var(--panel);counter-increment:s}
-.steps>div::before{content:counter(s);display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,var(--gold),var(--amber));color:#1a1100;font-weight:800;font-size:14px;margin-bottom:14px}
-.steps h3{font-size:16px}.steps p{color:var(--mute);font-size:14px;margin-top:6px}
+.rows h3{font-size:16.5px;font-weight:700;display:flex;align-items:center;gap:10px}
+.rows h3::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--grad-gold);flex-shrink:0}
+.rows p{color:var(--mute);font-size:14px;margin-top:6px;margin-left:16px}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:22px;margin-top:40px;counter-reset:s}
+.steps>div{padding:26px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);counter-increment:s;transition:border-color .2s,transform .2s,box-shadow .2s;position:relative;overflow:hidden}
+.steps>div:hover{border-color:rgba(255,179,64,.35);transform:translateY(-3px);box-shadow:var(--shadow-md)}
+.steps>div::before{content:counter(s);display:grid;place-items:center;width:32px;height:32px;border-radius:10px;background:var(--grad-gold);color:#1a1100;font-weight:800;font-size:14px;margin-bottom:16px;box-shadow:0 6px 18px rgba(255,154,30,.3)}
+.steps h3{font-size:16.5px;font-family:'Sora',sans-serif}.steps p{color:var(--mute);font-size:14px;margin-top:8px}
 @media(max-width:860px){.steps{grid-template-columns:1fr}}
-.cta-band{margin:0 0 72px;padding:44px 32px;border-radius:20px;border:1px solid rgba(242,193,78,.3);background:linear-gradient(135deg,rgba(242,193,78,.12),rgba(224,138,0,.04));display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap}
-.cta-band h2{font-size:26px;letter-spacing:-.6px}
-.cta-band p{color:var(--mute);margin-top:6px}
+.cta-band{margin:0 0 80px;padding:48px 36px;border-radius:24px;border:1px solid rgba(255,179,64,.25);background:linear-gradient(135deg,rgba(255,179,64,.1),rgba(139,92,246,.05));display:flex;align-items:center;justify-content:space-between;gap:26px;flex-wrap:wrap;position:relative;overflow:hidden}
+.cta-band::before{content:"";position:absolute;top:-50%;right:-10%;width:300px;height:300px;background:radial-gradient(circle,rgba(255,179,64,.15),transparent 70%);pointer-events:none}
+.cta-band h2{font-family:'Sora',sans-serif;font-size:27px;letter-spacing:-.8px}
+.cta-band p{color:var(--mute);margin-top:8px}
 
-.page-head{padding:64px 0 28px}
-.page-head h1{font-size:clamp(30px,4.4vw,46px);letter-spacing:-1.2px;font-weight:800}
-.page-head p{color:var(--mute);margin-top:10px;max-width:560px}
-.plans{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:28px}
+.page-head{padding:68px 0 30px}
+.page-head h1{font-family:'Sora',sans-serif;font-size:clamp(32px,4.6vw,48px);letter-spacing:-1.6px;font-weight:800}
+.page-head p{color:var(--mute);margin-top:12px;max-width:580px;font-size:15.5px}
+.plans{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:30px}
 @media(max-width:760px){.plans{grid-template-columns:1fr}}
-.plan{padding:30px;border-radius:18px;border:1px solid var(--line);background:var(--panel);position:relative}
-.plan.prem{border-color:rgba(242,193,78,.55);background:linear-gradient(160deg,#211a0c,#120f0a);box-shadow:0 0 60px rgba(242,193,78,.08)}
-.plan h3{font-size:20px;display:flex;align-items:center;gap:10px}
-.price{margin:14px 0 4px;font-size:34px;font-weight:800;letter-spacing:-1px}
+.plan{padding:32px;border-radius:var(--radius-lg);border:1px solid var(--line);background:var(--panel);position:relative;transition:transform .2s,border-color .2s}
+.plan:hover{transform:translateY(-3px)}
+.plan.prem{border-color:rgba(255,179,64,.5);background:linear-gradient(165deg,#1d170d,#120f0f 60%);box-shadow:0 0 70px rgba(255,179,64,.1)}
+.plan h3{font-size:21px;display:flex;align-items:center;gap:10px;font-family:'Sora',sans-serif}
+.price{margin:16px 0 4px;font-size:36px;font-weight:800;letter-spacing:-1.2px;font-family:'Sora',sans-serif}
 .price small{font-size:14px;color:var(--mute);font-weight:500;letter-spacing:0}
 .plan .note{color:var(--mute);font-size:13px;min-height:20px}
-.plan ul{list-style:none;margin:22px 0 26px}
-.plan li{padding:9px 0 9px 28px;position:relative;font-size:14px;border-bottom:1px solid rgba(255,255,255,.05)}
+.plan ul{list-style:none;margin:24px 0 28px}
+.plan li{padding:10px 0 10px 28px;position:relative;font-size:14px;border-bottom:1px solid rgba(255,255,255,.04)}
 .plan li:last-child{border-bottom:none}
 .plan li::before{content:"✓";position:absolute;left:0;color:var(--ok);font-weight:800}
-.plan li.no{color:var(--mute)}
+.plan li.no{color:var(--mute2)}
 .plan li.no::before{content:"✕";color:var(--bad)}
-.plan code{font-family:var(--mono);font-size:12px;background:rgba(242,193,78,.1);border:1px solid rgba(242,193,78,.25);color:var(--gold);padding:1px 6px;border-radius:5px}
-.buy{margin-top:56px;display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.plan code{font-family:var(--mono);font-size:12px;background:rgba(255,179,64,.1);border:1px solid rgba(255,179,64,.22);color:var(--gold);padding:2px 7px;border-radius:6px}
+.buy{margin-top:60px;display:grid;grid-template-columns:1fr 1fr;gap:22px}
 @media(max-width:760px){.buy{grid-template-columns:1fr}}
-.box{padding:26px;border:1px solid var(--line);border-radius:16px;background:var(--panel)}
-.box h3{font-size:17px;margin-bottom:12px}
+.box{padding:28px;border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--panel);transition:border-color .2s}
+.box:hover{border-color:var(--line2)}
+.box h3{font-size:17.5px;margin-bottom:14px;font-family:'Sora',sans-serif}
 .box ol{padding-left:20px;color:var(--mute);font-size:14px}
-.box ol li{padding:5px 0}
+.box ol li{padding:6px 0}
 .box ol b{color:var(--ink)}
-.faq details{border-bottom:1px solid var(--line);padding:16px 0}
-.faq summary{cursor:pointer;font-weight:600;list-style:none;display:flex;justify-content:space-between;gap:12px}
-.faq summary::after{content:"+";color:var(--gold);font-size:20px;line-height:1}
+.faq details{border-bottom:1px solid var(--line);padding:17px 0}
+.faq summary{cursor:pointer;font-weight:600;list-style:none;display:flex;justify-content:space-between;gap:12px;transition:color .15s}
+.faq summary:hover{color:var(--gold)}
+.faq summary::after{content:"+";color:var(--gold);font-size:20px;line-height:1;transition:transform .2s}
 .faq details[open] summary::after{content:"–"}
-.faq p{color:var(--mute);font-size:14px;margin-top:10px;max-width:680px}
+.faq p{color:var(--mute);font-size:14px;margin-top:11px;max-width:680px}
 
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin:32px 0 8px}
-.stat{padding:18px 20px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
-.stat b{display:block;font-size:26px;letter-spacing:-.6px}
-.stat span{font-size:13px;color:var(--mute)}
-.meter{height:6px;border-radius:99px;background:var(--line);margin-top:10px;overflow:hidden}
-.meter i{display:block;height:100%;background:linear-gradient(90deg,var(--gold),var(--amber))}
-.h-row{display:flex;align-items:center;gap:14px;margin:44px 0 16px}
-.h-row h2{font-size:20px;letter-spacing:-.4px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin:34px 0 8px}
+.stat{padding:20px 22px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);transition:border-color .18s,transform .18s,box-shadow .18s}
+.stat:hover{border-color:var(--line2);transform:translateY(-2px);box-shadow:var(--shadow-sm)}
+.stat b{display:block;font-size:27px;letter-spacing:-.7px;font-family:'Sora',sans-serif}
+.stat span{font-size:13px;color:var(--mute2)}
+.meter{height:6px;border-radius:99px;background:var(--line);margin-top:11px;overflow:hidden}
+.meter i{display:block;height:100%;background:var(--grad-gold);border-radius:99px}
+.h-row{display:flex;align-items:center;gap:14px;margin:48px 0 18px}
+.h-row h2{font-size:20px;letter-spacing:-.5px;font-family:'Sora',sans-serif}
 .h-row .ln{flex:1;height:1px;background:var(--line)}
-.alert{padding:14px 18px;border-radius:12px;border:1px solid rgba(255,107,94,.35);background:rgba(255,107,94,.07);font-size:14px;margin-bottom:16px;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
-.alert.gold{border-color:rgba(242,193,78,.35);background:rgba(242,193,78,.07)}
-.form{padding:24px;border:1px solid var(--line);border-radius:16px;background:var(--panel);display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.alert{padding:15px 19px;border-radius:14px;border:1px solid rgba(255,85,102,.3);background:rgba(255,85,102,.06);font-size:14px;margin-bottom:17px;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.alert.gold{border-color:rgba(255,179,64,.3);background:rgba(255,179,64,.06)}
+.form{padding:26px;border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--panel);display:grid;grid-template-columns:1fr 1fr;gap:13px}
 @media(max-width:700px){.form{grid-template-columns:1fr}}
-input,textarea{width:100%;border:1px solid var(--line2);border-radius:10px;background:#0e0c0a;color:var(--ink);padding:13px 14px;font-size:14px}
-input:focus,textarea:focus{border-color:var(--gold);outline:none}
-textarea{grid-column:1/-1;min-height:170px;resize:vertical;font-family:var(--mono);font-size:12.5px}
+input,textarea{width:100%;border:1px solid var(--line2);border-radius:11px;background:#0d0b0f;color:var(--ink);padding:14px 15px;font-size:14px;transition:border-color .15s,box-shadow .15s}
+input:focus,textarea:focus{border-color:var(--gold);outline:none;box-shadow:0 0 0 3px rgba(255,179,64,.1)}
+textarea{grid-column:1/-1;min-height:175px;resize:vertical;font-family:var(--mono);font-size:12.5px}
 .file-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .file-row label{cursor:pointer}
 .file-row span{color:var(--mute);font-size:13px}
 .form .btn{grid-column:1/-1}
 input[type=file]{display:none}
-.scripts{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
-.sc{position:relative;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:16px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
-.sc:hover{border-color:var(--line2)}
-.sc-info{display:flex;align-items:center;gap:12px;min-width:0}
-.sc-ic{width:42px;height:42px;border-radius:11px;display:grid;place-items:center;background:linear-gradient(135deg,var(--gold),var(--amber));font-size:20px;flex-shrink:0}
-.sc-name{font-weight:700;font-size:15px;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.scripts{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:15px}
+.sc{position:relative;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:18px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);transition:border-color .18s,box-shadow .18s,transform .18s}
+.sc:hover{border-color:var(--line2);transform:translateY(-2px);box-shadow:var(--shadow-sm)}
+.sc-info{display:flex;align-items:center;gap:13px;min-width:0}
+.sc-ic{width:44px;height:44px;border-radius:12px;display:grid;place-items:center;background:var(--grad-gold);font-size:20px;flex-shrink:0;box-shadow:0 6px 18px rgba(255,154,30,.28)}
+.sc-name{font-weight:700;font-size:15px;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'Sora',sans-serif}
 .sc-st{font-size:12px;font-weight:600}
 .sc-st.on{color:var(--ok)}.sc-st.off{color:var(--bad)}
-.sc-up{font-size:11px;color:var(--mute)}
-.dots{width:36px;height:36px;border:1px solid var(--line2);border-radius:9px;background:transparent;color:var(--gold);font-size:20px;cursor:pointer}
-.menu{display:none;position:absolute;right:12px;top:58px;z-index:20;width:200px;padding:6px;border:1px solid var(--line2);border-radius:12px;background:var(--panel2);box-shadow:0 18px 40px rgba(0,0,0,.6)}
+.sc-up{font-size:11px;color:var(--mute2)}
+.dots{width:36px;height:36px;border:1px solid var(--line2);border-radius:10px;background:transparent;color:var(--gold);font-size:20px;cursor:pointer;transition:background .15s}
+.dots:hover{background:rgba(255,179,64,.08)}
+.menu{display:none;position:absolute;right:12px;top:60px;z-index:20;width:200px;padding:6px;border:1px solid var(--line2);border-radius:var(--radius);background:var(--panel2);box-shadow:var(--shadow-md)}
 .menu.show{display:block}
-.menu button{display:block;width:100%;text-align:left;padding:10px 12px;border:none;border-radius:8px;background:transparent;color:var(--ink);font-size:13px;cursor:pointer}
-.menu button:hover{background:rgba(255,255,255,.05);color:var(--gold)}
+.menu button{display:block;width:100%;text-align:left;padding:11px 13px;border:none;border-radius:9px;background:transparent;color:var(--ink);font-size:13px;cursor:pointer;transition:background .15s,color .15s}
+.menu button:hover{background:rgba(255,255,255,.06);color:var(--gold)}
 .menu .del{color:var(--bad)}
-.empty{padding:44px 20px;text-align:center;color:var(--mute);border:1px dashed var(--line2);border-radius:16px;font-size:14px}
-.modal-bg{display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.72);backdrop-filter:blur(5px);align-items:center;justify-content:center;padding:16px}
+.empty{padding:48px 20px;text-align:center;color:var(--mute);border:1px dashed var(--line2);border-radius:var(--radius-lg);font-size:14px}
+.modal-bg{display:none;position:fixed;inset:0;z-index:200;background:rgba(5,4,6,.78);backdrop-filter:blur(6px);align-items:center;justify-content:center;padding:16px}
 .modal-bg.show{display:flex}
-.modal{width:100%;max-width:760px;max-height:90vh;overflow-y:auto;padding:26px;border:1px solid var(--line2);border-radius:18px;background:var(--panel)}
-.modal h3{font-size:18px;margin-bottom:16px}
+.modal{width:100%;max-width:760px;max-height:90vh;overflow-y:auto;padding:28px;border:1px solid var(--line2);border-radius:var(--radius-lg);background:var(--panel);box-shadow:var(--shadow-md)}
+.modal h3{font-size:18.5px;margin-bottom:17px;font-family:'Sora',sans-serif}
 .modal label.l{display:block;font-size:12px;color:var(--mute);margin:12px 0 6px}
 .modal textarea{min-height:300px}
-.modal-act{display:flex;gap:10px;margin-top:16px}
+.modal-act{display:flex;gap:10px;margin-top:17px}
 .modal-act .btn{flex:1}
 
-.center{min-height:calc(100vh - 64px);display:grid;place-items:center;padding:32px 0}
-.card{width:min(460px,100%);padding:34px 30px;border:1px solid var(--line2);border-radius:20px;background:var(--panel);box-shadow:0 30px 80px rgba(0,0,0,.5)}
-.card h1{font-size:26px;letter-spacing:-.8px}
-.card p{color:var(--mute);font-size:14px;margin-top:8px}
-.card .stack{display:grid;gap:12px;margin-top:22px}
-.kv{margin-top:20px;border:1px solid var(--line);border-radius:12px;overflow:hidden}
-.kv div{display:flex;justify-content:space-between;gap:12px;padding:11px 14px;font-size:13px;border-bottom:1px solid var(--line)}
+.center{min-height:calc(100vh - 68px);display:grid;place-items:center;padding:32px 0}
+.card{width:min(460px,100%);padding:38px 32px;border:1px solid var(--line2);border-radius:var(--radius-lg);background:var(--panel);box-shadow:var(--shadow-md);position:relative;overflow:hidden}
+.card::before{content:"";position:absolute;inset:0 0 auto 0;height:1px;background:linear-gradient(90deg,transparent,rgba(255,179,64,.5),transparent)}
+.card::after{content:"";position:absolute;top:-30%;left:50%;transform:translateX(-50%);width:260px;height:260px;background:radial-gradient(circle,rgba(255,179,64,.08),transparent 70%);pointer-events:none}
+.card h1{font-size:27px;letter-spacing:-1px;font-family:'Sora',sans-serif}
+.card p{color:var(--mute);font-size:14px;margin-top:9px}
+.card .stack{display:grid;gap:12px;margin-top:24px}
+.kv{margin-top:20px;border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.kv div{display:flex;justify-content:space-between;gap:12px;padding:12px 15px;font-size:13px;border-bottom:1px solid var(--line)}
 .kv div:last-child{border-bottom:none}
 .kv span{color:var(--mute)}
-.code{margin-top:16px;padding:14px;border:1px solid var(--line2);border-radius:12px;background:#0e0c0a;font-family:var(--mono);font-size:12.5px;color:var(--gold);white-space:pre-wrap;word-break:break-all;text-align:left}
+.code{margin-top:17px;padding:15px;border:1px solid var(--line2);border-radius:13px;background:#0a090c;font-family:var(--mono);font-size:12.5px;color:var(--gold);white-space:pre-wrap;word-break:break-all;text-align:left}
 .mono{font-family:var(--mono);letter-spacing:.5px}
 
-.foot{border-top:1px solid var(--line);padding:34px 0;margin-top:20px}
-.foot-in{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;color:var(--mute);font-size:13px}
-.foot-in nav{display:flex;gap:18px}
+.foot{border-top:1px solid var(--line);padding:38px 0;margin-top:24px}
+.foot-in{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;color:var(--mute2);font-size:13px}
+.foot-in nav{display:flex;gap:20px}
 .foot-in a:hover{color:var(--gold)}
-.toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,20px);opacity:0;z-index:999;padding:12px 20px;border-radius:12px;font-size:14px;font-weight:600;background:var(--panel2);border:1px solid var(--line2);transition:all .25s;max-width:calc(100% - 32px)}
+.toast{position:fixed;left:50%;bottom:30px;transform:translate(-50%,24px);opacity:0;z-index:999;padding:13px 22px;border-radius:13px;font-size:14px;font-weight:600;background:var(--panel2);border:1px solid var(--line2);transition:all .3s cubic-bezier(.2,.8,.2,1);max-width:calc(100% - 32px);box-shadow:var(--shadow-md)}
 .toast.show{opacity:1;transform:translate(-50%,0)}
-
-.toast.ok{border-color:rgba(111,220,140,.5)}.toast.err{border-color:rgba(255,107,94,.5)}
-.card{position:relative;overflow:hidden}
-.card::before{content:"";position:absolute;inset:0 0 auto 0;height:1px;background:linear-gradient(90deg,transparent,rgba(242,193,78,.45),transparent)}
-.btn-gold{box-shadow:0 8px 24px rgba(242,193,78,.18)}
-.btn-discord:hover{filter:brightness(1.08)}
-.stat{transition:border-color .15s,transform .15s}
-.stat:hover{border-color:var(--line2);transform:translateY(-1px)}
-.sc{transition:border-color .15s,box-shadow .15s}
-.sc:hover{box-shadow:0 12px 28px rgba(0,0,0,.35)}
+.toast.ok{border-color:rgba(52,224,122,.5)}.toast.err{border-color:rgba(255,85,102,.5)}
 
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.term-body .ln{opacity:1}}
 `;
@@ -2834,6 +2879,7 @@ app.get("/", (req, res) => {
 <main class="wrap">
   <section class="hero">
     <div>
+      <div class="badge free" style="margin-bottom:18px;border-color:rgba(255,179,64,.3);color:var(--gold)">⚡ Trusted by Roblox script sellers</div>
       <h1>Ship your Lua scripts behind a <em>key and a lock</em>.</h1>
       <p class="lead">Kingmor keeps your source on the server, hands it only to buyers with a valid key, and binds every key to one device. You manage it all from Discord.</p>
       <div class="hero-cta">
@@ -3025,590 +3071,4 @@ app.get("/obf", requireAuth, (req, res) => {
       <span id="obfFileName">No file selected</span>
     </div>
     <textarea id="obfSource" placeholder="Or paste your Lua source here" style="min-height:280px"></textarea>
-    <button class="btn btn-gold" id="obfBtn" onclick="runObf()" ${left <= 0 ? "disabled" : ""}>
-      ${left <= 0 ? "Quota reached" : "Obfuscate & download"}
-    </button>
-  </section>
-</main>
-`,
-    script: `
-var MAX=${MAX_SOURCE_CHARS};
-function readObfFile(input){
-  var f=input.files&&input.files[0]; if(!f)return;
-  if(f.size>MAX){toast('Maximum file size is 25MB','err');input.value='';return;}
-  $('obfFileName').textContent=f.name;
-  var r=new FileReader();
-  r.onload=function(){ $('obfSource').value=String(r.result||''); };
-  r.readAsText(f);
-}
-document.getElementById('obfFile').addEventListener('change',function(){ readObfFile(this); });
-
-async function runObf(){
-  var source=$('obfSource').value;
-  var name=($('obfName').value||'script_obf').trim().replace(/[^a-zA-Z0-9._-]+/g,'_') || 'script_obf';
-  if(!source.trim()){toast('Paste or upload a Lua script first','err');return;}
-  var b=$('obfBtn'); b.disabled=true; b.textContent='Obfuscating...';
-  try{
-    var r=await fetch('/api/obf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:source,name:name})});
-    if(!r.ok){
-      var d={}; try{d=await r.json()}catch(e){}
-      toast(d.error||('OBF failed ('+r.status+')'),'err');
-      b.disabled=false; b.textContent='Obfuscate & download';
-      return;
-    }
-    var blob=await r.blob();
-    var cd=r.headers.get('Content-Disposition')||'';
-    var m=cd.match(/filename="?([^";]+)"?/i);
-    var fname=m?m[1]:(name+'.lua');
-    var a=document.createElement('a');
-    a.href=URL.createObjectURL(blob);
-    a.download=fname;
-    document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(a.href);
-    toast('Obfuscated file downloaded','ok');
-    setTimeout(function(){ location.reload(); }, 600);
-  }catch(e){
-    toast('Server error','err');
-    b.disabled=false; b.textContent='Obfuscate & download';
-  }
-}
-`
-  }));
-});
-
-app.post("/api/obf", requireAuth, (req, res) => {
-  const userId = String(req.session.user.id);
-  const { source, name } = req.body || {};
-  if (!source || typeof source !== "string" || !source.trim()) {
-    return res.status(400).json({ error: "Lua source is required" });
-  }
-  if (source.length > MAX_SOURCE_CHARS) {
-    return res.status(413).json({ error: `File too large. Maximum ${Math.floor(MAX_SOURCE_CHARS / (1024 * 1024))}MB.` });
-  }
-
-  const limit = obfLimitFor(userId);
-  const used = getObfUsed(userId);
-  if (used >= limit) {
-    return res.status(403).json({
-      error: isUltra(userId)
-        ? `OBF quota error`
-        : `OBF quota reached (${used}/${limit}). Free ${OBF_LIMIT.free} · Premium ${OBF_LIMIT.premium} · Ultra unlimited.`,
-      used, limit, premium: isPremium(userId), plan: getUserPlan(userId) || "free",
-    });
-  }
-
-  let out;
-  try {
-    out = obfuscateLua(source);
-  } catch (e) {
-    console.error("standalone obf failed:", e);
-    return res.status(500).json({ error: "Obfuscation failed" });
-  }
-  if (!out || !String(out).trim()) {
-    return res.status(500).json({ error: "Obfuscation produced empty output" });
-  }
-
-  const newCount = incObfUsed(userId);
-  const safe = String(name || "script_obf").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80) || "script_obf";
-  const filename = safe.endsWith(".lua") ? safe : safe + ".lua";
-
-  console.log(`🔒 OBF standalone: user ${userId} -> ${filename} (${newCount}/${limit})`);
-
-  res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-  res.setHeader("X-Obf-Used", String(newCount));
-  res.setHeader("X-Obf-Limit", String(limit));
-  return res.send(out);
-});
-
-app.get("/dashboard", requireAuth, (req, res) => {
-  const db = readDB();
-  const user = req.session.user;
-  const userId = String(user.id);
-  const base = getBaseUrl(req);
-  const scripts = db.filter((s) => String(s.ownerId) === userId);
-  const totalKeys = readKeys().filter((k) => k.createdBy === userId).length;
-  const premium = isPremium(userId);
-  const pdata = readPremium()[userId] || null;
-  const limit = scriptLimitFor(userId);
-  const reached = scripts.length >= limit;
-  const pct = Math.min(100, Math.round((scripts.length / limit) * 100));
-  const planName = planLabel(userId);
-  const planText = premium
-    ? (pdata && pdata.expiry ? `${planName} · until ${fmtDate(pdata.expiry)}` : `${planName} · lifetime`)
-    : "Free plan";
-
-  const cards = scripts.map((s) => {
-    const loaderUrl = `${base}/api/loader/${s.id}.lua`;
-    const loaderCode = `loadstring(game:HttpGet("${loaderUrl}"))()`;
-    const upd = s.updatedAt ? fmtDate(s.updatedAt) : "-";
-    return `
-<div class="sc">
-  <div class="sc-info">
-    <div class="sc-ic">👑</div>
-    <div>
-      <div class="sc-name">${escapeHtml(s.name)}</div>
-      <div class="sc-st ${s.enabled ? "on" : "off"}">${s.enabled ? "● Enabled" : "● Disabled"}</div>
-      <div class="sc-up">Updated ${escapeHtml(upd)}</div>
-    </div>
-  </div>
-  <button class="dots" onclick="toggleMenu('${s.id}')" aria-label="Script actions">⋮</button>
-  <div class="menu" id="menu-${s.id}">
-    <button onclick="openEdit('${s.id}')">Edit source</button>
-    <button onclick="copyText(${escapeHtml(JSON.stringify(loaderCode))})">Copy loader</button>
-    <button onclick="window.open(${escapeHtml(JSON.stringify(loaderUrl))},'_blank')">Open loader page</button>
-    <button onclick="toggleScript('${s.id}')">${s.enabled ? "Disable" : "Enable"}</button>
-    <button class="del" onclick="deleteScript('${s.id}')">Delete</button>
-  </div>
-</div>`;
-  }).join("");
-
-  const limitAlert = reached
-    ? `<div class="alert ${premium ? "" : "gold"}"><span>${premium
-        ? `You're using all ${limit} Premium script slots. Delete a script to upload another.`
-        : `You're using ${scripts.length}/${limit} free script slots. Redeem a Premium key to get ${SCRIPT_LIMIT.premium}.`}</span>${premium ? "" : `<a class="btn btn-gold btn-sm" href="/redeem">Redeem key</a>`}</div>`
-    : "";
-
-  const body = `
-<main class="wrap" style="padding-bottom:40px">
-  <div class="page-head" style="padding-bottom:0">
-    <h1>Dashboard</h1>
-    <p>Manage your protected scripts. Use the Discord bot for keys, whitelists and panels.</p>
-    <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-      ${(() => {
-        const sid = String(req.session.selectedBot || "1");
-        const cat = getBotCatalog().find(b => b.id === sid) || getBotCatalog()[0];
-        const count = getBotServerCount(sid);
-        return `<span class="badge prem">Active bot: ${escapeHtml(cat.tag)} · ${count} servers</span>
-      <a class="btn btn-ghost btn-sm" href="/select-bot">Change bot</a>
-      <a class="btn btn-ghost btn-sm" href="${cat.invite || BOT_INVITE}" target="_blank" rel="noopener">Invite this bot</a>`;
-      })()}
-    </div>
-  </div>
-
-  <div class="stats">
-    <div class="stat"><b>${escapeHtml(planText)}</b><span>Your plan</span>${premium ? "" : `<div style="margin-top:10px"><a class="btn btn-gold btn-sm" href="/redeem">Redeem Premium key</a></div>`}</div>
-    <div class="stat"><b>${scripts.length} / ${limit}</b><span>Script slots used</span><div class="meter"><i style="width:${pct}%"></i></div></div>
-    <div class="stat"><b>${scripts.filter((s) => s.enabled).length}</b><span>Enabled scripts</span></div>
-    <div class="stat"><b>${totalKeys}</b><span>Keys you generated</span></div>
-  </div>
-
-  <div class="h-row"><h2>Upload a script</h2><div class="ln"></div></div>
-  ${limitAlert}
-  <section class="form">
-    <input id="scriptName" placeholder="Script name">
-    <div class="file-row">
-      <label class="btn btn-ghost btn-sm" for="fileInput">Choose .lua / .txt file</label>
-      <input id="fileInput" type="file" accept=".lua,.txt,text/plain">
-      <span id="fileName">No file selected</span>
-    </div>
-    <textarea id="scriptSource" placeholder="Or paste your Lua source here"></textarea>
-    <label style="display:flex;align-items:center;gap:10px;margin:12px 0;cursor:pointer;user-select:none">
-      <input type="checkbox" id="scriptObf" checked style="width:18px;height:18px;accent-color:var(--gold)">
-      <span><b>Obfuscate on deliver</b> <span style="color:var(--mute);font-size:13px">(extra layer when buyer runs loader)</span></span>
-    </label>
-    <button class="btn btn-gold" id="upBtn" onclick="uploadScript()" ${reached ? "disabled" : ""}>${reached ? "Script limit reached" : "Protect and upload"}</button>
-  </section>
-
-  <div class="h-row"><h2>Your scripts</h2><div class="ln"></div></div>
-  <section class="scripts">
-    ${cards || `<div class="empty" style="grid-column:1/-1">No scripts yet. Upload your first Lua script above.</div>`}
-  </section>
-</main>
-
-<div class="modal-bg" id="editModal">
-  <div class="modal">
-    <h3>Edit script</h3>
-    <label class="l" for="editName">Script name</label>
-    <input id="editName" placeholder="Script name">
-    <label class="l">Source code</label>
-    <div class="file-row" style="margin-bottom:10px">
-      <label class="btn btn-ghost btn-sm" for="editFileInput">Replace with file</label>
-      <input id="editFileInput" type="file" accept=".lua,.txt,text/plain">
-      <span id="editFileName">No file selected</span>
-    </div>
-    <textarea id="editSource" placeholder="Paste your Lua source here"></textarea>
-    <label style="display:flex;align-items:center;gap:10px;margin:12px 0;cursor:pointer;user-select:none">
-      <input type="checkbox" id="editObf" style="width:18px;height:18px;accent-color:var(--gold)">
-      <span><b>Obfuscate on deliver</b></span>
-    </label>
-    <div id="editObfNote" style="display:none;margin-bottom:10px">
-      <button class="btn btn-ghost btn-sm" type="button" onclick="viewObfSource()">View obfuscated preview</button>
-      <span style="color:var(--mute);font-size:12px;margin-left:8px">Preview only — keep editing plain source</span>
-    </div>
-    <div class="modal-act">
-      <button class="btn btn-ghost" onclick="closeEdit()">Cancel</button>
-      <button class="btn btn-gold" id="editSaveBtn" onclick="saveEdit()">Save changes</button>
-    </div>
-  </div>
-</div>`;
-
-  const script = `
-var editingId=null;
-var MAX=25*1024*1024;
-function readFileInto(input,nameEl,onText){
-  var f=input.files[0];if(!f)return;
-  var n=f.name.toLowerCase();
-  if(!n.endsWith('.lua')&&!n.endsWith('.txt')){toast('Only .lua or .txt files are allowed','err');input.value='';return;}
-  if(f.size>MAX){toast('Maximum file size is 25MB','err');input.value='';return;}
-  nameEl.textContent=f.name;
-  var rd=new FileReader();rd.onload=function(e){onText(e.target.result,f.name);};rd.readAsText(f);
-}
-$('fileInput').addEventListener('change',function(){
-  readFileInto(this,$('fileName'),function(t,n){$('scriptSource').value=t;$('scriptName').value=n.replace(/\\.(lua|txt)$/i,'');});
-});
-$('editFileInput').addEventListener('change',function(){
-  readFileInto(this,$('editFileName'),function(t){$('editSource').value=t;});
-});
-function toggleMenu(id){
-  document.querySelectorAll('.menu').forEach(function(m){if(m.id!=='menu-'+id)m.classList.remove('show');});
-  var m=$('menu-'+id);if(m)m.classList.toggle('show');
-}
-document.addEventListener('click',function(e){
-  if(!e.target.closest('.menu')&&!e.target.closest('.dots'))document.querySelectorAll('.menu').forEach(function(m){m.classList.remove('show');});
-});
-async function uploadScript(){
-  var name=$('scriptName').value.trim(),source=$('scriptSource').value;
-  var obfuscate=!!$('scriptObf')&&$('scriptObf').checked;
-  if(!name){toast('Enter a script name','err');return;}
-  if(!source.trim()){toast('Add your Lua source','err');return;}
-  var b=$('upBtn');b.disabled=true;b.textContent='Uploading...';
-  try{
-    var r=await fetch('/api/scripts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,source:source,obfuscate:obfuscate})});
-    var d=await r.json();
-    if(!r.ok){toast(d.error||'Upload failed','err');b.disabled=false;b.textContent='Protect and upload';return;}
-    location.reload();
-  }catch(e){toast('Server error','err');b.disabled=false;b.textContent='Protect and upload';}
-}
-async function toggleScript(id){
-  var r=await fetch('/api/scripts/'+id+'/toggle',{method:'POST'});
-  if(r.ok)location.reload();else toast('Failed to change status','err');
-}
-async function deleteScript(id){
-  if(!confirm('Delete this script? This cannot be undone.'))return;
-  var r=await fetch('/api/scripts/'+id,{method:'DELETE'});
-  if(r.ok)location.reload();else toast('Delete failed','err');
-}
-async function openEdit(id){
-  editingId=id;
-  $('editFileInput').value='';$('editFileName').textContent='No file selected';
-  $('editName').value='Loading...';$('editSource').value='Loading...';
-  if($('editObf')) $('editObf').checked=false;
-  if($('editObfNote')) $('editObfNote').style.display='none';
-  $('editModal').classList.add('show');
-  try{
-    var r=await fetch('/api/scripts/'+id+'/source');var d=await r.json();
-    if(!r.ok){toast(d.error||'Failed to load script','err');closeEdit();return;}
-    $('editName').value=d.name;$('editSource').value=d.source||'';
-    if($('editObf')) $('editObf').checked=!!d.obfuscated;
-    if($('editObfNote')) $('editObfNote').style.display=d.obfuscated?'block':'none';
-  }catch(e){toast('Failed to load script source','err');closeEdit();}
-}
-async function viewObfSource(){
-  if(!editingId)return;
-  try{
-    var r=await fetch('/api/scripts/'+editingId+'/source?obf=1');var d=await r.json();
-    if(!r.ok){toast(d.error||'Failed','err');return;}
-    $('editSource').value=d.source||'';
-    toast('Showing obfuscated preview — do not save unless you intend to replace source','ok');
-  }catch(e){toast('Failed to load OBF preview','err');}
-}
-function closeEdit(){$('editModal').classList.remove('show');editingId=null;}
-async function saveEdit(){
-  if(!editingId)return;
-  var name=$('editName').value.trim(),source=$('editSource').value;
-  if(!name){toast('Script name cannot be empty','err');return;}
-  if(!source.trim()){toast('Source code cannot be empty','err');return;}
-  var b=$('editSaveBtn');b.disabled=true;b.textContent='Saving...';
-  try{
-    var r=await fetch('/api/scripts/'+editingId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,source:source,obfuscate:(!!$('editObf')&&$('editObf').checked)})});
-    var d=await r.json();
-    if(!r.ok){toast(d.error||'Failed to save','err');b.disabled=false;b.textContent='Save changes';return;}
-    location.reload();
-  }catch(e){toast('Server error','err');b.disabled=false;b.textContent='Save changes';}
-}
-$('editModal').addEventListener('click',function(e){if(e.target.id==='editModal')closeEdit();});
-document.addEventListener('keydown',function(e){if(e.key==='Escape'&&$('editModal').classList.contains('show'))closeEdit();});`;
-
-  res.send(page({ req, title: "Kingmor — Dashboard", active: "dashboard", body, script }));
-});
-
-// ==================== ADMIN: PLAYER SOURCE ====================
-app.get("/admin", isAdmin, (req, res) => {
-  res.redirect("/admin/sources");
-});
-
-app.get("/admin/sources", isAdmin, (req, res) => {
-  const db = readDB();
-  const keys = readKeys();
-  const base = getBaseUrl(req);
-
-  const grouped = {};
-  for (const s of db) {
-    if (!grouped[s.ownerId]) {
-      grouped[s.ownerId] = {
-        ownerId: s.ownerId,
-        ownerUsername: s.ownerUsername || "Unknown",
-        scripts: [],
-      };
-    }
-    grouped[s.ownerId].scripts.push(s);
-  }
-
-  const users = Object.values(grouped).sort((a, b) =>
-    (a.ownerUsername || "").localeCompare(b.ownerUsername || "")
-  );
-
-  const totalScripts = db.length;
-  const totalUsers = users.length;
-  const totalKeys = keys.length;
-  const enabledCount = db.filter(s => s.enabled).length;
-
-  const userCards = users.map(u => {
-    const scriptCards = u.scripts.map(s => {
-      const sourceForSize = readScriptSource(s);
-      const size = sourceForSize ? Buffer.byteLength(sourceForSize, "utf8") : 0;
-      const sizeStr = size > 1024 * 1024
-        ? (size / 1024 / 1024).toFixed(2) + " MB"
-        : size > 1024 ? (size / 1024).toFixed(1) + " KB" : size + " B";
-      const scriptKeys = keys.filter(k => k.scriptId === s.id);
-      const usedKeys = scriptKeys.filter(k => k.userId).length;
-      const upd = s.updatedAt ? fmtDate(s.updatedAt) : (s.createdAt ? fmtDate(s.createdAt) : "-");
-      return `
-        <div class="src-script" data-script-id="${s.id}">
-          <div class="src-head">
-            <div>
-              <div class="src-title">
-                <span class="sc-st ${s.enabled ? "on" : "off"}">${s.enabled ? "● ON" : "● OFF"}</span>
-                ${escapeHtml(s.name)}
-              </div>
-              <div class="src-meta">
-                <span title="Script ID">🆔 ${escapeHtml(s.id)}</span>
-                <span>📦 ${sizeStr}</span>
-                <span>🔑 ${usedKeys}/${scriptKeys.length} keys used</span>
-                <span>📅 ${escapeHtml(upd)}</span>
-              </div>
-            </div>
-            <div class="src-act">
-              <button class="btn btn-ghost btn-sm" onclick="viewSource('${s.id}', this)">View Source</button>
-              <a class="btn btn-ghost btn-sm" href="/api/scripts/${s.id}/source/admin/download" download>Download</a>
-              <button class="btn btn-ghost btn-sm" onclick="copyLoader('${escapeHtml(base)}/api/loader/${s.id}.lua')">Loader</button>
-            </div>
-          </div>
-          <pre id="src-${s.id}" class="code src-pre" style="display:none"></pre>
-        </div>
-      `;
-    }).join("");
-
-    return `
-      <div class="src-user">
-        <div class="src-user-head">
-          <div class="src-user-avatar">👤</div>
-          <div>
-            <div class="src-user-name">${escapeHtml(u.ownerUsername)}</div>
-            <div class="src-user-id">ID: ${escapeHtml(u.ownerId)} • ${u.scripts.length} script(s)</div>
-          </div>
-          <div class="src-user-badges">
-            ${isPremium(u.ownerId) ? '<span class="badge prem">👑 Premium</span>' : '<span class="badge free">Free</span>'}
-          </div>
-        </div>
-        <div class="src-user-body">${scriptCards}</div>
-      </div>
-    `;
-  }).join("");
-
-  const body = `
-<main class="wrap" style="padding-bottom:60px">
-  <div class="page-head">
-    <h1>🕵️ Player Source</h1>
-    <p>View and download original Lua sources uploaded by every user. Admin only.</p>
-  </div>
-
-  <div class="stats" style="margin-top:0">
-    <div class="stat"><b>${totalUsers}</b><span>Total users</span></div>
-    <div class="stat"><b>${totalScripts}</b><span>Total scripts</span></div>
-    <div class="stat"><b>${enabledCount}</b><span>Enabled scripts</span></div>
-    <div class="stat"><b>${totalKeys}</b><span>Total keys</span></div>
-  </div>
-
-  <div class="h-row">
-    <h2>Search</h2>
-    <div class="ln"></div>
-  </div>
-  <input id="srcSearch" placeholder="Search by username or script name..." style="margin-bottom:20px">
-
-  <div class="h-row">
-    <h2>All players</h2>
-    <div class="ln"></div>
-  </div>
-
-  <div id="srcList">
-    ${userCards || `<div class="empty">No scripts have been uploaded yet.</div>`}
-  </div>
-</main>
-
-<style>
-.src-user{margin-bottom:22px;padding:20px;border:1px solid var(--line2);border-radius:16px;background:var(--panel)}
-.src-user-head{display:flex;align-items:center;gap:14px;padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:14px;flex-wrap:wrap}
-.src-user-avatar{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,var(--gold),var(--amber));font-size:20px;flex-shrink:0}
-.src-user-name{font-weight:700;font-size:16px;letter-spacing:-.3px}
-.src-user-id{font-size:12px;color:var(--mute);font-family:var(--mono);margin-top:2px}
-.src-user-badges{margin-left:auto}
-.src-user-body{display:grid;gap:12px}
-.src-script{padding:14px;border:1px solid var(--line);border-radius:12px;background:#0e0c0a}
-.src-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start}
-.src-title{font-weight:700;font-size:15px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.src-meta{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mute);font-family:var(--mono);margin-top:8px}
-.src-act{display:flex;gap:8px;flex-wrap:wrap}
-.src-pre{margin-top:12px;max-height:420px;overflow:auto;font-size:12px;line-height:1.55}
-@media(max-width:700px){
-  .src-head{flex-direction:column}
-  .src-act{width:100%}
-  .src-act .btn{flex:1}
-  .src-user-badges{margin-left:0}
-}
-</style>
-
-<script>
-async function viewSource(id, btn){
-  var pre = document.getElementById('src-' + id);
-  if (pre.style.display === 'block') {
-    pre.style.display = 'none';
-    btn.textContent = 'View Source';
-    return;
-  }
-  btn.disabled = true;
-  btn.textContent = 'Loading...';
-  pre.style.display = 'block';
-  pre.textContent = '// Loading source...';
-  try {
-    var r = await fetch('/api/scripts/' + id + '/source/admin');
-    if (!r.ok) {
-      pre.textContent = '// Failed to load source (HTTP ' + r.status + ')';
-      btn.disabled = false;
-      btn.textContent = 'View Source';
-      return;
-    }
-    var d = await r.json();
-    pre.textContent = d.source || '// Empty source';
-    btn.disabled = false;
-    btn.textContent = 'Hide Source';
-  } catch (e) {
-    pre.textContent = '// Error: ' + e.message;
-    btn.disabled = false;
-    btn.textContent = 'View Source';
-  }
-}
-
-function downloadSource(id, name) {
-  // Direct file download via dedicated endpoint (session cookie is sent automatically)
-  var a = document.createElement('a');
-  a.href = '/api/scripts/' + id + '/source/admin/download';
-  a.download = '';
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  if (typeof toast === 'function') toast('Downloading...', 'ok');
-}
-
-function copyLoader(url){
-  copyText('loadstring(game:HttpGet("' + url + '"))()');
-}
-
-document.getElementById('srcSearch').addEventListener('input', function(e){
-  var q = e.target.value.toLowerCase().trim();
-  document.querySelectorAll('.src-user').forEach(function(card){
-    var text = card.textContent.toLowerCase();
-    card.style.display = (!q || text.includes(q)) ? '' : 'none';
-  });
-});
-</script>`;
-
-  res.send(page({
-    req,
-    title: "Kingmor — Player Source",
-    active: "sources",
-    body,
-  }));
-});
-
-// ==================== ADMIN PAGE ====================
-
-app.get("/admin/dashboard", isAdmin, (req, res) => {
-  const db = readDB();
-  const keys = readKeys();
-  const premium = readPremium();
-  const pkeys = readPremiumKeys();
-
-  const rows = [
-    ["Total scripts", db.length],
-    ["Total users", new Set(db.map((s) => s.ownerId)).size],
-    ["Total keys", keys.length],
-    ["Enabled scripts", db.filter((s) => s.enabled).length],
-    ["Premium users", Object.keys(premium).filter((id) => isPremium(id)).length],
-    ["Premium keys (unused)", pkeys.filter((k) => !k.redeemedBy).length],
-    ["Premium keys (redeemed)", pkeys.filter((k) => k.redeemedBy).length],
-  ];
-  const body = `<main class="wrap center"><div class="card" style="width:min(560px,100%)">
-    <h1>Admin overview</h1>
-    <div class="kv">${rows.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join("")}</div>
-    <div class="stack">
-      <a class="btn btn-gold btn-block" href="/admin/sources">🕵️ Player Source</a>
-      <a class="btn btn-ghost btn-block" href="/dashboard">Back to dashboard</a>
-    </div>
-  </div></main>`;
-  res.send(page({ req, title: "Kingmor — Admin", active: "admin", body, bare: true }));
-});
-
-// ==================== HEALTH CHECK ====================
-app.get("/health", (req, res) => {
-  res.status(200).json({
-    status: "ok",
-    uptime: process.uptime(),
-    databaseReady: !!databaseReady,
-  });
-});
-
-// ==================== START ====================
-async function startServer() {
-  // Listen first so Railway does not show 502 while DB is connecting
-  app.listen(PORT, () => {
-    console.log(`Kingmor running on port ${PORT}`);
-    console.log(`API_SECRET loaded: ${API_SECRET ? "yes (" + API_SECRET.length + " chars)" : "NO"}`);
-    console.log(`Premium price: ${PREMIUM_PRICE_IDR} / ${PREMIUM_PRICE_USD}`);
-    console.log(`Script limits: free ${SCRIPT_LIMIT.free}, premium ${SCRIPT_LIMIT.premium}`);
-  });
-
-  const maxAttempts = 10;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await initPostgres();
-      console.log(`PostgreSQL: connected`);
-      return;
-    } catch (err) {
-      console.error(`❌ PostgreSQL startup attempt ${attempt}/${maxAttempts} failed:`, err.message || err);
-      if (attempt === maxAttempts) {
-        console.error("❌ PostgreSQL still unavailable after retries. Process stays up for /health; fix DATABASE_URL and redeploy.");
-        return;
-      }
-      await new Promise((r) => setTimeout(r, 2000 * attempt));
-    }
-  }
-}
-
-async function shutdown(signal) {
-  console.log(`\n${signal} received. Waiting for database writes...`);
-  try {
-    await dbWriteQueue;
-    await pool.end();
-  } catch (e) {
-    console.error("Shutdown error:", e.message);
-  } finally {
-    process.exit(0);
-  }
-}
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
-
-startServer();
+    <button class="btn
