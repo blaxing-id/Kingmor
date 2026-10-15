@@ -707,7 +707,7 @@ function obfuscateLua(plainSource) {
   const poolB = Array.from({ length: 48 }, () => rndU32() % 1e6).join(",");
 
   const v = {};
-  for (const k of ["ls","k0","k1","k2","km0","km1","s0","s1","s2","m0","m1","m2","a0","a1","a2",
+  for (const k of ["ls","k0","k1","k2","km0","km1","km2","s0","s1","s2","m0","m1","m2","a0","a1","a2",
     "roll","rA","rB","chunks","ord","code","xor","b64","layer","umul","st","pc","n","decoy","pa","pb","tmp"]) {
     v[k] = id();
   }
@@ -3071,4 +3071,590 @@ app.get("/obf", requireAuth, (req, res) => {
       <span id="obfFileName">No file selected</span>
     </div>
     <textarea id="obfSource" placeholder="Or paste your Lua source here" style="min-height:280px"></textarea>
-    <button class="btn
+    <button class="btn btn-gold" id="obfBtn" onclick="runObf()" ${left <= 0 ? "disabled" : ""}>
+      ${left <= 0 ? "Quota reached" : "Obfuscate & download"}
+    </button>
+  </section>
+</main>
+`,
+    script: `
+var MAX=${MAX_SOURCE_CHARS};
+function readObfFile(input){
+  var f=input.files&&input.files[0]; if(!f)return;
+  if(f.size>MAX){toast('Maximum file size is 25MB','err');input.value='';return;}
+  $('obfFileName').textContent=f.name;
+  var r=new FileReader();
+  r.onload=function(){ $('obfSource').value=String(r.result||''); };
+  r.readAsText(f);
+}
+document.getElementById('obfFile').addEventListener('change',function(){ readObfFile(this); });
+
+async function runObf(){
+  var source=$('obfSource').value;
+  var name=($('obfName').value||'script_obf').trim().replace(/[^a-zA-Z0-9._-]+/g,'_') || 'script_obf';
+  if(!source.trim()){toast('Paste or upload a Lua script first','err');return;}
+  var b=$('obfBtn'); b.disabled=true; b.textContent='Obfuscating...';
+  try{
+    var r=await fetch('/api/obf',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:source,name:name})});
+    if(!r.ok){
+      var d={}; try{d=await r.json()}catch(e){}
+      toast(d.error||('OBF failed ('+r.status+')'),'err');
+      b.disabled=false; b.textContent='Obfuscate & download';
+      return;
+    }
+    var blob=await r.blob();
+    var cd=r.headers.get('Content-Disposition')||'';
+    var m=cd.match(/filename="?([^";]+)"?/i);
+    var fname=m?m[1]:(name+'.lua');
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=fname;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(a.href);
+    toast('Obfuscated file downloaded','ok');
+    setTimeout(function(){ location.reload(); }, 600);
+  }catch(e){
+    toast('Server error','err');
+    b.disabled=false; b.textContent='Obfuscate & download';
+  }
+}
+`
+  }));
+});
+
+app.post("/api/obf", requireAuth, (req, res) => {
+  const userId = String(req.session.user.id);
+  const { source, name } = req.body || {};
+  if (!source || typeof source !== "string" || !source.trim()) {
+    return res.status(400).json({ error: "Lua source is required" });
+  }
+  if (source.length > MAX_SOURCE_CHARS) {
+    return res.status(413).json({ error: `File too large. Maximum ${Math.floor(MAX_SOURCE_CHARS / (1024 * 1024))}MB.` });
+  }
+
+  const limit = obfLimitFor(userId);
+  const used = getObfUsed(userId);
+  if (used >= limit) {
+    return res.status(403).json({
+      error: isUltra(userId)
+        ? `OBF quota error`
+        : `OBF quota reached (${used}/${limit}). Free ${OBF_LIMIT.free} · Premium ${OBF_LIMIT.premium} · Ultra unlimited.`,
+      used, limit, premium: isPremium(userId), plan: getUserPlan(userId) || "free",
+    });
+  }
+
+  let out;
+  try {
+    out = obfuscateLua(source);
+  } catch (e) {
+    console.error("standalone obf failed:", e);
+    return res.status(500).json({ error: "Obfuscation failed" });
+  }
+  if (!out || !String(out).trim()) {
+    return res.status(500).json({ error: "Obfuscation produced empty output" });
+  }
+
+  const newCount = incObfUsed(userId);
+  const safe = String(name || "script_obf").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80) || "script_obf";
+  const filename = safe.endsWith(".lua") ? safe : safe + ".lua";
+
+  console.log(`🔒 OBF standalone: user ${userId} -> ${filename} (${newCount}/${limit})`);
+
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.setHeader("X-Obf-Used", String(newCount));
+  res.setHeader("X-Obf-Limit", String(limit));
+  return res.send(out);
+});
+
+app.get("/dashboard", requireAuth, (req, res) => {
+  const db = readDB();
+  const user = req.session.user;
+  const userId = String(user.id);
+  const base = getBaseUrl(req);
+  const scripts = db.filter((s) => String(s.ownerId) === userId);
+  const totalKeys = readKeys().filter((k) => k.createdBy === userId).length;
+  const premium = isPremium(userId);
+  const pdata = readPremium()[userId] || null;
+  const limit = scriptLimitFor(userId);
+  const reached = scripts.length >= limit;
+  const pct = Math.min(100, Math.round((scripts.length / limit) * 100));
+  const planName = planLabel(userId);
+  const planText = premium
+    ? (pdata && pdata.expiry ? `${planName} · until ${fmtDate(pdata.expiry)}` : `${planName} · lifetime`)
+    : "Free plan";
+
+  const cards = scripts.map((s) => {
+    const loaderUrl = `${base}/api/loader/${s.id}.lua`;
+    const loaderCode = `loadstring(game:HttpGet("${loaderUrl}"))()`;
+    const upd = s.updatedAt ? fmtDate(s.updatedAt) : "-";
+    return `
+<div class="sc">
+  <div class="sc-info">
+    <div class="sc-ic">👑</div>
+    <div>
+      <div class="sc-name">${escapeHtml(s.name)}</div>
+      <div class="sc-st ${s.enabled ? "on" : "off"}">${s.enabled ? "● Enabled" : "● Disabled"}</div>
+      <div class="sc-up">Updated ${escapeHtml(upd)}</div>
+    </div>
+  </div>
+  <button class="dots" onclick="toggleMenu('${s.id}')" aria-label="Script actions">⋮</button>
+  <div class="menu" id="menu-${s.id}">
+    <button onclick="openEdit('${s.id}')">Edit source</button>
+    <button onclick="copyText(${escapeHtml(JSON.stringify(loaderCode))})">Copy loader</button>
+    <button onclick="window.open(${escapeHtml(JSON.stringify(loaderUrl))},'_blank')">Open loader page</button>
+    <button onclick="toggleScript('${s.id}')">${s.enabled ? "Disable" : "Enable"}</button>
+    <button class="del" onclick="deleteScript('${s.id}')">Delete</button>
+  </div>
+</div>`;
+  }).join("");
+
+  const limitAlert = reached
+    ? `<div class="alert ${premium ? "" : "gold"}"><span>${premium
+        ? `You're using all ${limit} Premium script slots. Delete a script to upload another.`
+        : `You're using ${scripts.length}/${limit} free script slots. Redeem a Premium key to get ${SCRIPT_LIMIT.premium}.`}</span>${premium ? "" : `<a class="btn btn-gold btn-sm" href="/redeem">Redeem key</a>`}</div>`
+    : "";
+
+  const body = `
+<main class="wrap" style="padding-bottom:40px">
+  <div class="page-head" style="padding-bottom:0">
+    <h1>Dashboard</h1>
+    <p>Manage your protected scripts. Use the Discord bot for keys, whitelists and panels.</p>
+    <div style="margin-top:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      ${(() => {
+        const sid = String(req.session.selectedBot || "1");
+        const cat = getBotCatalog().find(b => b.id === sid) || getBotCatalog()[0];
+        const count = getBotServerCount(sid);
+        return `<span class="badge prem">Active bot: ${escapeHtml(cat.tag)} · ${count} servers</span>
+      <a class="btn btn-ghost btn-sm" href="/select-bot">Change bot</a>
+      <a class="btn btn-ghost btn-sm" href="${cat.invite || BOT_INVITE}" target="_blank" rel="noopener">Invite this bot</a>`;
+      })()}
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><b>${escapeHtml(planText)}</b><span>Your plan</span>${premium ? "" : `<div style="margin-top:10px"><a class="btn btn-gold btn-sm" href="/redeem">Redeem Premium key</a></div>`}</div>
+    <div class="stat"><b>${scripts.length} / ${limit}</b><span>Script slots used</span><div class="meter"><i style="width:${pct}%"></i></div></div>
+    <div class="stat"><b>${scripts.filter((s) => s.enabled).length}</b><span>Enabled scripts</span></div>
+    <div class="stat"><b>${totalKeys}</b><span>Keys you generated</span></div>
+  </div>
+
+  <div class="h-row"><h2>Upload a script</h2><div class="ln"></div></div>
+  ${limitAlert}
+  <section class="form">
+    <input id="scriptName" placeholder="Script name">
+    <div class="file-row">
+      <label class="btn btn-ghost btn-sm" for="fileInput">Choose .lua / .txt file</label>
+      <input id="fileInput" type="file" accept=".lua,.txt,text/plain">
+      <span id="fileName">No file selected</span>
+    </div>
+    <textarea id="scriptSource" placeholder="Or paste your Lua source here"></textarea>
+    <label style="display:flex;align-items:center;gap:10px;margin:12px 0;cursor:pointer;user-select:none">
+      <input type="checkbox" id="scriptObf" checked style="width:18px;height:18px;accent-color:var(--gold)">
+      <span><b>Obfuscate on deliver</b> <span style="color:var(--mute);font-size:13px">(extra layer when buyer runs loader)</span></span>
+    </label>
+    <button class="btn btn-gold" id="upBtn" onclick="uploadScript()" ${reached ? "disabled" : ""}>${reached ? "Script limit reached" : "Protect and upload"}</button>
+  </section>
+
+  <div class="h-row"><h2>Your scripts</h2><div class="ln"></div></div>
+  <section class="scripts">
+    ${cards || `<div class="empty" style="grid-column:1/-1">No scripts yet. Upload your first Lua script above.</div>`}
+  </section>
+</main>
+
+<div class="modal-bg" id="editModal">
+  <div class="modal">
+    <h3>Edit script</h3>
+    <label class="l" for="editName">Script name</label>
+    <input id="editName" placeholder="Script name">
+    <label class="l">Source code</label>
+    <div class="file-row" style="margin-bottom:10px">
+      <label class="btn btn-ghost btn-sm" for="editFileInput">Replace with file</label>
+      <input id="editFileInput" type="file" accept=".lua,.txt,text/plain">
+      <span id="editFileName">No file selected</span>
+    </div>
+    <textarea id="editSource" placeholder="Paste your Lua source here"></textarea>
+    <label style="display:flex;align-items:center;gap:10px;margin:12px 0;cursor:pointer;user-select:none">
+      <input type="checkbox" id="editObf" style="width:18px;height:18px;accent-color:var(--gold)">
+      <span><b>Obfuscate on deliver</b></span>
+    </label>
+    <div id="editObfNote" style="display:none;margin-bottom:10px">
+      <button class="btn btn-ghost btn-sm" type="button" onclick="viewObfSource()">View obfuscated preview</button>
+      <span style="color:var(--mute);font-size:12px;margin-left:8px">Preview only — keep editing plain source</span>
+    </div>
+    <div class="modal-act">
+      <button class="btn btn-ghost" onclick="closeEdit()">Cancel</button>
+      <button class="btn btn-gold" id="editSaveBtn" onclick="saveEdit()">Save changes</button>
+    </div>
+  </div>
+</div>`;
+
+  const script = `
+var editingId=null;
+var MAX=25*1024*1024;
+function readFileInto(input,nameEl,onText){
+  var f=input.files[0];if(!f)return;
+  var n=f.name.toLowerCase();
+  if(!n.endsWith('.lua')&&!n.endsWith('.txt')){toast('Only .lua or .txt files are allowed','err');input.value='';return;}
+  if(f.size>MAX){toast('Maximum file size is 25MB','err');input.value='';return;}
+  nameEl.textContent=f.name;
+  var rd=new FileReader();rd.onload=function(e){onText(e.target.result,f.name);};rd.readAsText(f);
+}
+$('fileInput').addEventListener('change',function(){
+  readFileInto(this,$('fileName'),function(t,n){$('scriptSource').value=t;$('scriptName').value=n.replace(/\\.(lua|txt)$/i,'');});
+});
+$('editFileInput').addEventListener('change',function(){
+  readFileInto(this,$('editFileName'),function(t){$('editSource').value=t;});
+});
+function toggleMenu(id){
+  document.querySelectorAll('.menu').forEach(function(m){if(m.id!=='menu-'+id)m.classList.remove('show');});
+  var m=$('menu-'+id);if(m)m.classList.toggle('show');
+}
+document.addEventListener('click',function(e){
+  if(!e.target.closest('.menu')&&!e.target.closest('.dots'))document.querySelectorAll('.menu').forEach(function(m){m.classList.remove('show');});
+});
+async function uploadScript(){
+  var name=$('scriptName').value.trim(),source=$('scriptSource').value;
+  var obfuscate=!!$('scriptObf')&&$('scriptObf').checked;
+  if(!name){toast('Enter a script name','err');return;}
+  if(!source.trim()){toast('Add your Lua source','err');return;}
+  var b=$('upBtn');b.disabled=true;b.textContent='Uploading...';
+  try{
+    var r=await fetch('/api/scripts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,source:source,obfuscate:obfuscate})});
+    var d=await r.json();
+    if(!r.ok){toast(d.error||'Upload failed','err');b.disabled=false;b.textContent='Protect and upload';return;}
+    location.reload();
+  }catch(e){toast('Server error','err');b.disabled=false;b.textContent='Protect and upload';}
+}
+async function toggleScript(id){
+  var r=await fetch('/api/scripts/'+id+'/toggle',{method:'POST'});
+  if(r.ok)location.reload();else toast('Failed to change status','err');
+}
+async function deleteScript(id){
+  if(!confirm('Delete this script? This cannot be undone.'))return;
+  var r=await fetch('/api/scripts/'+id,{method:'DELETE'});
+  if(r.ok)location.reload();else toast('Delete failed','err');
+}
+async function openEdit(id){
+  editingId=id;
+  $('editFileInput').value='';$('editFileName').textContent='No file selected';
+  $('editName').value='Loading...';$('editSource').value='Loading...';
+  if($('editObf')) $('editObf').checked=false;
+  if($('editObfNote')) $('editObfNote').style.display='none';
+  $('editModal').classList.add('show');
+  try{
+    var r=await fetch('/api/scripts/'+id+'/source');var d=await r.json();
+    if(!r.ok){toast(d.error||'Failed to load script','err');closeEdit();return;}
+    $('editName').value=d.name;$('editSource').value=d.source||'';
+    if($('editObf')) $('editObf').checked=!!d.obfuscated;
+    if($('editObfNote')) $('editObfNote').style.display=d.obfuscated?'block':'none';
+  }catch(e){toast('Failed to load script source','err');closeEdit();}
+}
+async function viewObfSource(){
+  if(!editingId)return;
+  try{
+    var r=await fetch('/api/scripts/'+editingId+'/source?obf=1');var d=await r.json();
+    if(!r.ok){toast(d.error||'Failed','err');return;}
+    $('editSource').value=d.source||'';
+    toast('Showing obfuscated preview — do not save unless you intend to replace source','ok');
+  }catch(e){toast('Failed to load OBF preview','err');}
+}
+function closeEdit(){$('editModal').classList.remove('show');editingId=null;}
+async function saveEdit(){
+  if(!editingId)return;
+  var name=$('editName').value.trim(),source=$('editSource').value;
+  if(!name){toast('Script name cannot be empty','err');return;}
+  if(!source.trim()){toast('Source code cannot be empty','err');return;}
+  var b=$('editSaveBtn');b.disabled=true;b.textContent='Saving...';
+  try{
+    var r=await fetch('/api/scripts/'+editingId,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:name,source:source,obfuscate:(!!$('editObf')&&$('editObf').checked)})});
+    var d=await r.json();
+    if(!r.ok){toast(d.error||'Failed to save','err');b.disabled=false;b.textContent='Save changes';return;}
+    location.reload();
+  }catch(e){toast('Server error','err');b.disabled=false;b.textContent='Save changes';}
+}
+$('editModal').addEventListener('click',function(e){if(e.target.id==='editModal')closeEdit();});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'&&$('editModal').classList.contains('show'))closeEdit();});`;
+
+  res.send(page({ req, title: "Kingmor — Dashboard", active: "dashboard", body, script }));
+});
+
+// ==================== ADMIN: PLAYER SOURCE ====================
+app.get("/admin", isAdmin, (req, res) => {
+  res.redirect("/admin/sources");
+});
+
+app.get("/admin/sources", isAdmin, (req, res) => {
+  const db = readDB();
+  const keys = readKeys();
+  const base = getBaseUrl(req);
+
+  const grouped = {};
+  for (const s of db) {
+    if (!grouped[s.ownerId]) {
+      grouped[s.ownerId] = {
+        ownerId: s.ownerId,
+        ownerUsername: s.ownerUsername || "Unknown",
+        scripts: [],
+      };
+    }
+    grouped[s.ownerId].scripts.push(s);
+  }
+
+  const users = Object.values(grouped).sort((a, b) =>
+    (a.ownerUsername || "").localeCompare(b.ownerUsername || "")
+  );
+
+  const totalScripts = db.length;
+  const totalUsers = users.length;
+  const totalKeys = keys.length;
+  const enabledCount = db.filter(s => s.enabled).length;
+
+  const userCards = users.map(u => {
+    const scriptCards = u.scripts.map(s => {
+      const sourceForSize = readScriptSource(s);
+      const size = sourceForSize ? Buffer.byteLength(sourceForSize, "utf8") : 0;
+      const sizeStr = size > 1024 * 1024
+        ? (size / 1024 / 1024).toFixed(2) + " MB"
+        : size > 1024 ? (size / 1024).toFixed(1) + " KB" : size + " B";
+      const scriptKeys = keys.filter(k => k.scriptId === s.id);
+      const usedKeys = scriptKeys.filter(k => k.userId).length;
+      const upd = s.updatedAt ? fmtDate(s.updatedAt) : (s.createdAt ? fmtDate(s.createdAt) : "-");
+      return `
+        <div class="src-script" data-script-id="${s.id}">
+          <div class="src-head">
+            <div>
+              <div class="src-title">
+                <span class="sc-st ${s.enabled ? "on" : "off"}">${s.enabled ? "● ON" : "● OFF"}</span>
+                ${escapeHtml(s.name)}
+              </div>
+              <div class="src-meta">
+                <span title="Script ID">🆔 ${escapeHtml(s.id)}</span>
+                <span>📦 ${sizeStr}</span>
+                <span>🔑 ${usedKeys}/${scriptKeys.length} keys used</span>
+                <span>📅 ${escapeHtml(upd)}</span>
+              </div>
+            </div>
+            <div class="src-act">
+              <button class="btn btn-ghost btn-sm" onclick="viewSource('${s.id}', this)">View Source</button>
+              <a class="btn btn-ghost btn-sm" href="/api/scripts/${s.id}/source/admin/download" download>Download</a>
+              <button class="btn btn-ghost btn-sm" onclick="copyLoader('${escapeHtml(base)}/api/loader/${s.id}.lua')">Loader</button>
+            </div>
+          </div>
+          <pre id="src-${s.id}" class="code src-pre" style="display:none"></pre>
+        </div>
+      `;
+    }).join("");
+
+    return `
+      <div class="src-user">
+        <div class="src-user-head">
+          <div class="src-user-avatar">👤</div>
+          <div>
+            <div class="src-user-name">${escapeHtml(u.ownerUsername)}</div>
+            <div class="src-user-id">ID: ${escapeHtml(u.ownerId)} • ${u.scripts.length} script(s)</div>
+          </div>
+          <div class="src-user-badges">
+            ${isPremium(u.ownerId) ? '<span class="badge prem">👑 Premium</span>' : '<span class="badge free">Free</span>'}
+          </div>
+        </div>
+        <div class="src-user-body">${scriptCards}</div>
+      </div>
+    `;
+  }).join("");
+
+  const body = `
+<main class="wrap" style="padding-bottom:60px">
+  <div class="page-head">
+    <h1>🕵️ Player Source</h1>
+    <p>View and download original Lua sources uploaded by every user. Admin only.</p>
+  </div>
+
+  <div class="stats" style="margin-top:0">
+    <div class="stat"><b>${totalUsers}</b><span>Total users</span></div>
+    <div class="stat"><b>${totalScripts}</b><span>Total scripts</span></div>
+    <div class="stat"><b>${enabledCount}</b><span>Enabled scripts</span></div>
+    <div class="stat"><b>${totalKeys}</b><span>Total keys</span></div>
+  </div>
+
+  <div class="h-row">
+    <h2>Search</h2>
+    <div class="ln"></div>
+  </div>
+  <input id="srcSearch" placeholder="Search by username or script name..." style="margin-bottom:20px">
+
+  <div class="h-row">
+    <h2>All players</h2>
+    <div class="ln"></div>
+  </div>
+
+  <div id="srcList">
+    ${userCards || `<div class="empty">No scripts have been uploaded yet.</div>`}
+  </div>
+</main>
+
+<style>
+.src-user{margin-bottom:22px;padding:20px;border:1px solid var(--line2);border-radius:16px;background:var(--panel)}
+.src-user-head{display:flex;align-items:center;gap:14px;padding-bottom:14px;border-bottom:1px solid var(--line);margin-bottom:14px;flex-wrap:wrap}
+.src-user-avatar{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:linear-gradient(135deg,var(--gold),var(--amber));font-size:20px;flex-shrink:0}
+.src-user-name{font-weight:700;font-size:16px;letter-spacing:-.3px}
+.src-user-id{font-size:12px;color:var(--mute);font-family:var(--mono);margin-top:2px}
+.src-user-badges{margin-left:auto}
+.src-user-body{display:grid;gap:12px}
+.src-script{padding:14px;border:1px solid var(--line);border-radius:12px;background:#0e0c0a}
+.src-head{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start}
+.src-title{font-weight:700;font-size:15px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.src-meta{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mute);font-family:var(--mono);margin-top:8px}
+.src-act{display:flex;gap:8px;flex-wrap:wrap}
+.src-pre{margin-top:12px;max-height:420px;overflow:auto;font-size:12px;line-height:1.55}
+@media(max-width:700px){
+  .src-head{flex-direction:column}
+  .src-act{width:100%}
+  .src-act .btn{flex:1}
+  .src-user-badges{margin-left:0}
+}
+</style>
+
+<script>
+async function viewSource(id, btn){
+  var pre = document.getElementById('src-' + id);
+  if (pre.style.display === 'block') {
+    pre.style.display = 'none';
+    btn.textContent = 'View Source';
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Loading...';
+  pre.style.display = 'block';
+  pre.textContent = '// Loading source...';
+  try {
+    var r = await fetch('/api/scripts/' + id + '/source/admin');
+    if (!r.ok) {
+      pre.textContent = '// Failed to load source (HTTP ' + r.status + ')';
+      btn.disabled = false;
+      btn.textContent = 'View Source';
+      return;
+    }
+    var d = await r.json();
+    pre.textContent = d.source || '// Empty source';
+    btn.disabled = false;
+    btn.textContent = 'Hide Source';
+  } catch (e) {
+    pre.textContent = '// Error: ' + e.message;
+    btn.disabled = false;
+    btn.textContent = 'View Source';
+  }
+}
+
+function downloadSource(id, name) {
+  // Direct file download via dedicated endpoint (session cookie is sent automatically)
+  var a = document.createElement('a');
+  a.href = '/api/scripts/' + id + '/source/admin/download';
+  a.download = '';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  if (typeof toast === 'function') toast('Downloading...', 'ok');
+}
+
+function copyLoader(url){
+  copyText('loadstring(game:HttpGet("' + url + '"))()');
+}
+
+document.getElementById('srcSearch').addEventListener('input', function(e){
+  var q = e.target.value.toLowerCase().trim();
+  document.querySelectorAll('.src-user').forEach(function(card){
+    var text = card.textContent.toLowerCase();
+    card.style.display = (!q || text.includes(q)) ? '' : 'none';
+  });
+});
+</script>`;
+
+  res.send(page({
+    req,
+    title: "Kingmor — Player Source",
+    active: "sources",
+    body,
+  }));
+});
+
+// ==================== ADMIN PAGE ====================
+
+app.get("/admin/dashboard", isAdmin, (req, res) => {
+  const db = readDB();
+  const keys = readKeys();
+  const premium = readPremium();
+  const pkeys = readPremiumKeys();
+
+  const rows = [
+    ["Total scripts", db.length],
+    ["Total users", new Set(db.map((s) => s.ownerId)).size],
+    ["Total keys", keys.length],
+    ["Enabled scripts", db.filter((s) => s.enabled).length],
+    ["Premium users", Object.keys(premium).filter((id) => isPremium(id)).length],
+    ["Premium keys (unused)", pkeys.filter((k) => !k.redeemedBy).length],
+    ["Premium keys (redeemed)", pkeys.filter((k) => k.redeemedBy).length],
+  ];
+  const body = `<main class="wrap center"><div class="card" style="width:min(560px,100%)">
+    <h1>Admin overview</h1>
+    <div class="kv">${rows.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join("")}</div>
+    <div class="stack">
+      <a class="btn btn-gold btn-block" href="/admin/sources">🕵️ Player Source</a>
+      <a class="btn btn-ghost btn-block" href="/dashboard">Back to dashboard</a>
+    </div>
+  </div></main>`;
+  res.send(page({ req, title: "Kingmor — Admin", active: "admin", body, bare: true }));
+});
+
+// ==================== HEALTH CHECK ====================
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    uptime: process.uptime(),
+    databaseReady: !!databaseReady,
+  });
+});
+
+// ==================== START ====================
+async function startServer() {
+  // Listen first so Railway does not show 502 while DB is connecting
+  app.listen(PORT, () => {
+    console.log(`Kingmor running on port ${PORT}`);
+    console.log(`API_SECRET loaded: ${API_SECRET ? "yes (" + API_SECRET.length + " chars)" : "NO"}`);
+    console.log(`Premium price: ${PREMIUM_PRICE_IDR} / ${PREMIUM_PRICE_USD}`);
+    console.log(`Script limits: free ${SCRIPT_LIMIT.free}, premium ${SCRIPT_LIMIT.premium}`);
+  });
+
+  const maxAttempts = 10;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await initPostgres();
+      console.log(`PostgreSQL: connected`);
+      return;
+    } catch (err) {
+      console.error(`❌ PostgreSQL startup attempt ${attempt}/${maxAttempts} failed:`, err.message || err);
+      if (attempt === maxAttempts) {
+        console.error("❌ PostgreSQL still unavailable after retries. Process stays up for /health; fix DATABASE_URL and redeploy.");
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 2000 * attempt));
+    }
+  }
+}
+
+async function shutdown(signal) {
+  console.log(`\n${signal} received. Waiting for database writes...`);
+  try {
+    await dbWriteQueue;
+    await pool.end();
+  } catch (e) {
+    console.error("Shutdown error:", e.message);
+  } finally {
+    process.exit(0);
+  }
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
+
+startServer();
