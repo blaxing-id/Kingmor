@@ -557,6 +557,16 @@ function deriveScriptKey(scriptId) {
   return crypto.createHmac("sha256", String(API_SECRET || "kingmor")).update(String(scriptId)).digest();
 }
 
+/**
+ * Deterministic seed for obfuscateLua(), derived from scriptId + API_SECRET.
+ * Needed so large scripts delivered in multiple HTTP parts (pack mode) can be
+ * re-obfuscated IDENTICALLY on each separate part request / Railway replica —
+ * obfuscateLua is normally random per call, which breaks multi-part reassembly.
+ */
+function deriveObfSeed(scriptId) {
+  return crypto.createHmac("sha256", String(API_SECRET || "kingmor")).update("obf:" + String(scriptId)).digest();
+}
+
 function xorScramble(buf, keyBuf) {
   const out = Buffer.allocUnsafe(buf.length);
   const kl = keyBuf.length;
@@ -606,11 +616,33 @@ function readScriptSource(script) {
 // - Roll key split across 2 vars + reconstructed inline
 // - Header comment randomized or omitted entirely
 // - Seed values encoded via arithmetic expression, not raw integer literals
-function obfuscateLua(plainSource) {
+function obfuscateLua(plainSource, seedBuf) {
   const src = String(plainSource || "");
   if (!src.trim()) return src;
 
-  const rndU32 = () => crypto.randomBytes(4).readUInt32BE(0) >>> 0;
+  // Deterministic byte stream when seedBuf is given (needed so multi-part
+  // pack delivery can regenerate IDENTICAL obfuscated bytes across separate
+  // HTTP requests / Railway replicas, with zero shared state). Falls back to
+  // real crypto.randomBytes for one-shot calls (standalone OBF tool, preview).
+  let __seedCounter = 0;
+  let __seedBuf = Buffer.alloc(0);
+  let __seedPos = 0;
+  function nextBytes(n) {
+    if (!seedBuf) return crypto.randomBytes(n);
+    const out = Buffer.allocUnsafe(n);
+    for (let i = 0; i < n; i++) {
+      if (__seedPos >= __seedBuf.length) {
+        const ctr = Buffer.alloc(4);
+        ctr.writeUInt32BE(__seedCounter++, 0);
+        __seedBuf = crypto.createHash("sha256").update(seedBuf).update(ctr).digest();
+        __seedPos = 0;
+      }
+      out[i] = __seedBuf[__seedPos++];
+    }
+    return out;
+  }
+
+  const rndU32 = () => nextBytes(4).readUInt32BE(0) >>> 0;
   const id = () => {
     const A = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
     let s = A[rndU32() % A.length];
@@ -650,7 +682,7 @@ function obfuscateLua(plainSource) {
   const adds = pickedIdx.map(i => ADD_POOL[i]);
 
   // 3-layer encrypt with independent random keys
-  const keys = [crypto.randomBytes(32), crypto.randomBytes(32), crypto.randomBytes(32)];
+  const keys = [nextBytes(32), nextBytes(32), nextBytes(32)];
   const seeds = [
     (rndU32() & 0x7fffffff) | 1,
     (rndU32() & 0x7fffffff) | 1,
@@ -663,7 +695,7 @@ function obfuscateLua(plainSource) {
   }
 
   // final XOR with rolling position key
-  const roll = crypto.randomBytes(16);
+  const roll = nextBytes(16);
   for (let i = 0; i < buf.length; i++) {
     buf[i] ^= roll[i & 15] ^ ((i * 31) & 255);
   }
@@ -716,7 +748,7 @@ function obfuscateLua(plainSource) {
   // Output: two arrays of 32 ints each, neither matches the tool's regex for "the real key"
   // Lua runtime recovers original key = masked[i] XOR kmask[i]
   const kMasked = keys.map(k => {
-    const mask = crypto.randomBytes(32);
+    const mask = nextBytes(32);
     const masked = Buffer.allocUnsafe(32);
     for (let i = 0; i < 32; i++) masked[i] = (k[i] + mask[i]) % 256;
     return { masked: Array.from(masked).join(","), mask: Array.from(mask).join(",") };
@@ -971,9 +1003,12 @@ function scrambleSlice(plainBuf, key, seed, start, length) {
 function buildSecureLoader(plain, userKey, freeModeFlag, base, scriptId, doObfuscate) {
   let payload = String(plain || "");
   // Heavy OBF only for moderately sized scripts (large files stay transit-encrypted for max reliability)
+  // Seeded deterministically by scriptId so pack-mode part requests (separate
+  // HTTP calls, possibly hitting a different Railway replica) can regenerate
+  // the exact same obfuscated bytes instead of drifting — see isPack handler.
   if (doObfuscate && Buffer.byteLength(payload, "utf8") <= 200 * 1024) {
     try {
-      payload = obfuscateLua(payload);
+      payload = obfuscateLua(payload, deriveObfSeed(scriptId));
     } catch (e) {
       console.error("obfuscateLua at deliver failed:", e.message);
     }
@@ -2615,7 +2650,17 @@ ${sourceCode}`;
     if (plainSource == null || plainSource === "") return sendLua(kickPlayer("Source Missing"));
     const providedKey = (req.query.key || "").toLowerCase().trim();
 
-    // ----- Pack part download (multi-instance safe: re-scramble from source) -----
+    // ----- Pack part download (multi-instance safe: re-derive the SAME payload) -----
+    // BUG FIX: this used to slice straight from plainSource (raw script).
+    // But the bootstrap sent to the executor is built from `payload`, which is
+    // obfuscateLua(plainSource) whenever script.obfuscated is true and the
+    // script is small enough to obfuscate — a DIFFERENT, usually much longer
+    // byte sequence than plainSource. Slicing the wrong buffer produced parts
+    // that never matched what the client expected, so later parts ran out of
+    // data or decrypted to garbage → "[Kingmor] Download failed part N".
+    // Fix: rebuild the exact same payload here (obfuscateLua is now seeded
+    // deterministically by scriptId, so it reproduces identical bytes) before
+    // slicing, so every part — on every replica — slices the right buffer.
     const isPack = req.query.pack === "1" || req.query.pack === "true";
     const partNum = req.query.part != null ? parseInt(req.query.part, 10) : NaN;
     if (isPack && Number.isFinite(partNum)) {
@@ -2627,7 +2672,18 @@ ${sourceCode}`;
       if (!/^[a-f0-9]{64}$/i.test(kh)) return sendLua(kickPlayer("Bad Pack Key"));
       const packKey = Buffer.from(kh, "hex");
       if (packKey.length !== 32) return sendLua(kickPlayer("Bad Pack Key"));
-      const plainBuf = Buffer.from(plainSource, "utf8");
+
+      let packPayload = plainSource;
+      if (script.obfuscated === true && Buffer.byteLength(plainSource, "utf8") <= 200 * 1024) {
+        try {
+          packPayload = obfuscateLua(plainSource, deriveObfSeed(scriptId));
+        } catch (e) {
+          console.error("pack obfuscateLua regen failed:", e);
+          return sendLua(kickPlayer("Pack Obf Error"));
+        }
+      }
+
+      const plainBuf = Buffer.from(packPayload, "utf8");
       const startIdx = (Math.max(1, partNum) - 1) * psz;
       if (startIdx >= plainBuf.length) return sendLua("");
       try {
